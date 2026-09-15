@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -310,17 +311,17 @@ func TestSleepWithContextCancelledDuringSleep(t *testing.T) {
 
 func TestParseRetryAfterCap(t *testing.T) {
 	tests := []struct {
-		header   string
-		wantMax  time.Duration
+		header    string
+		wantMax   time.Duration
 		wantExact time.Duration
 	}{
 		{"600", 60 * time.Second, 60 * time.Second},  // 10 minutes → capped to 60s
 		{"3600", 60 * time.Second, 60 * time.Second}, // 1 hour → capped to 60s
 		{"30", 60 * time.Second, 30 * time.Second},   // within limit → unchanged
 		{"60", 60 * time.Second, 60 * time.Second},   // exactly at limit
-		{"0", 60 * time.Second, baseDelay},            // zero → baseDelay
-		{"", 60 * time.Second, baseDelay},             // empty → baseDelay
-		{"abc", 60 * time.Second, baseDelay},          // invalid → baseDelay
+		{"0", 60 * time.Second, baseDelay},           // zero → baseDelay
+		{"", 60 * time.Second, baseDelay},            // empty → baseDelay
+		{"abc", 60 * time.Second, baseDelay},         // invalid → baseDelay
 	}
 
 	for _, tt := range tests {
@@ -397,5 +398,25 @@ func TestGetWithStatus404(t *testing.T) {
 	}
 	if status != 404 {
 		t.Errorf("expected status 404, got %d", status)
+	}
+}
+
+func TestPostWithStatusReturnsCodeOnConflict(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"errorMessages":["another workflow configuration update task is ongoing"]}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(ClientConfig{URL: srv.URL, User: "u", Token: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := c.PostWithStatus(context.Background(), "/rest/api/3/workflows/create", map[string]string{}, nil)
+	if status != http.StatusConflict {
+		t.Fatalf("status: want 409, got %d", status)
+	}
+	if err == nil || !strings.Contains(err.Error(), "another workflow configuration update task is ongoing") {
+		t.Fatalf("error must carry the body, got: %v", err)
 	}
 }

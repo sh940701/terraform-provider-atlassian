@@ -238,27 +238,36 @@ func (c *Client) GetWithStatus(ctx context.Context, path string, v interface{}) 
 
 // Post performs a POST request with a JSON body and decodes the response into v.
 func (c *Client) Post(ctx context.Context, path string, body interface{}, v interface{}) error {
+	_, err := c.PostWithStatus(ctx, path, body, v)
+	return err
+}
+
+// PostWithStatus is like Post but also returns the HTTP status code, so a
+// caller can react to a specific non-2xx code (e.g. 409 while another
+// workflow configuration task is running) instead of only seeing an error.
+// On a non-2xx status the returned error carries the response body.
+func (c *Client) PostWithStatus(ctx context.Context, path string, body interface{}, v interface{}) (int, error) {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("marshaling request body: %w", err)
+		return 0, fmt.Errorf("marshaling request body: %w", err)
 	}
 
 	resp, err := c.Do(ctx, "POST", path, jsonBody)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("POST %s: unexpected status %d: %s", path, resp.StatusCode, string(bodyBytes))
+		return resp.StatusCode, fmt.Errorf("POST %s: unexpected status %d: %s", path, resp.StatusCode, string(bodyBytes))
 	}
 
 	if v != nil {
-		return json.NewDecoder(resp.Body).Decode(v)
+		return resp.StatusCode, json.NewDecoder(resp.Body).Decode(v)
 	}
 
-	return nil
+	return resp.StatusCode, nil
 }
 
 // Put performs a PUT request with a JSON body and decodes the response into v.
