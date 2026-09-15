@@ -434,7 +434,7 @@ func (r *workflowResource) validate(ctx context.Context, kind string, payload in
 		msgs = append(msgs, fmt.Sprintf("%s: %s", e.Code, e.Message))
 	}
 	if len(msgs) > 0 {
-		return fmt.Errorf("Jira rejected the workflow:\n  - %s", strings.Join(msgs, "\n  - "))
+		return fmt.Errorf("workflow rejected by Jira:\n  - %s", strings.Join(msgs, "\n  - "))
 	}
 	return nil
 }

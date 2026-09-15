@@ -344,7 +344,7 @@ func (webhookURLValidator) ValidateString(_ context.Context, req validator.Strin
 	}
 	if p := u.Port(); p != "" {
 		n, err := strconv.Atoi(p)
-		if err != nil || !(webhookAllowedPorts[n] || (n >= 1880 && n <= 1890)) {
+		if err != nil || (!webhookAllowedPorts[n] && (n < 1880 || n > 1890)) {
 			resp.Diagnostics.AddAttributeError(req.Path, "Invalid webhook URL port",
 				fmt.Sprintf("Jira does not deliver webhooks to port %s. Allowed: 443, 1880-1890, 4044, 6017, 7990, 8060, 8080, 8085, 8089, 8090, 8443, 8444, 8900, 9900, 9420, 9520.", p))
 		}
