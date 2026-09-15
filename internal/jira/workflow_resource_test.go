@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strings"
 	"sync"
 	"testing"
 
-	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/lbajsarowicz/terraform-provider-atlassian/internal/testutil"
@@ -16,317 +17,510 @@ import (
 
 const workflowFixedEntityID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
-type workflowMockState struct {
-	mu          sync.Mutex
-	entityID    string
-	name        string
-	description string
-	statuses    []string
+// workflowMock models the versioned workflow API closely enough to exercise
+// the resource end to end:
+//   - GET  /rest/api/3/statuses/search          global statuses (paginated shape)
+//   - POST /rest/api/3/workflows/create/validation, /update/validation
+//   - POST /rest/api/3/workflows/create           assigns entityId, version 1, transition/rule ids
+//   - POST /rest/api/3/workflows                  bulk get by ids or names
+//   - POST /rest/api/3/workflows/update           version lock (409 on mismatch or when forced), optional taskId
+//   - GET  /rest/api/3/task/{id}                  COMPLETE
+//   - DELETE /rest/api/3/workflow/{entityId}
+type workflowMock struct {
+	mu        sync.Mutex
+	statuses  []map[string]interface{}          // id, name, statusCategory
+	workflows map[string]map[string]interface{} // entityId → document (with version, ids)
+	nextRule  int
+	// knobs
+	conflictOnce bool // next create/update answers 409 once
+	asyncUpdate  bool // update answers with taskId and no workflow
+	rejectNamed  string
+	updateBodies []map[string]interface{}
+	createBodies []map[string]interface{}
 }
 
-func (s *workflowMockState) set(entityID, name, description string, statuses []string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.entityID = entityID
-	s.name = name
-	s.description = description
-	s.statuses = statuses
+func newWorkflowMock() *workflowMock {
+	return &workflowMock{
+		statuses: []map[string]interface{}{
+			{"id": "11216", "name": "기안", "statusCategory": map[string]interface{}{"key": "TODO"}},
+			{"id": "11217", "name": "검토 중", "statusCategory": map[string]interface{}{"key": "IN_PROGRESS"}},
+			{"id": "11218", "name": "승인 대기", "statusCategory": map[string]interface{}{"key": "IN_PROGRESS"}},
+			{"id": "10373", "name": "완료", "statusCategory": map[string]interface{}{"key": "DONE"}},
+		},
+		workflows: map[string]map[string]interface{}{},
+		nextRule:  100,
+	}
 }
 
-func (s *workflowMockState) clear() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.entityID = ""
-	s.name = ""
-	s.description = ""
-	s.statuses = nil
-}
-
-func (s *workflowMockState) get() (string, string, string, []string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	statusesCopy := make([]string, len(s.statuses))
-	copy(statusesCopy, s.statuses)
-	return s.entityID, s.name, s.description, statusesCopy
-}
-
-func (s *workflowMockState) apiItem() map[string]interface{} {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	statusList := make([]map[string]interface{}, len(s.statuses))
-	for i, sid := range s.statuses {
-		statusList[i] = map[string]interface{}{
-			"id":              sid,
-			"statusReference": sid,
-			"name":            "Status " + sid,
-			"statusCategory":  "TODO",
+func (m *workflowMock) assignIDs(wf map[string]interface{}) {
+	trs, _ := wf["transitions"].([]interface{})
+	for i, raw := range trs {
+		t := raw.(map[string]interface{})
+		if id, _ := t["id"].(string); id == "" {
+			t["id"] = fmt.Sprint(i + 1)
+		}
+		for _, k := range []string{"actions", "validators", "triggers"} {
+			rules, _ := t[k].([]interface{})
+			for _, r := range rules {
+				rule := r.(map[string]interface{})
+				if id, _ := rule["id"].(string); id == "" {
+					rule["id"] = fmt.Sprintf("rule-%d", m.nextRule)
+					m.nextRule++
+				}
+			}
+		}
+		if c, ok := t["conditions"].(map[string]interface{}); ok {
+			rules, _ := c["conditions"].([]interface{})
+			for _, r := range rules {
+				rule := r.(map[string]interface{})
+				if id, _ := rule["id"].(string); id == "" {
+					rule["id"] = fmt.Sprintf("rule-%d", m.nextRule)
+					m.nextRule++
+				}
+			}
 		}
 	}
-	return map[string]interface{}{
-		"id": map[string]interface{}{
-			"entityId": s.entityID,
-			"name":     s.name,
-		},
-		"description": s.description,
-		"statuses":    statusList,
-		"transitions": []interface{}{},
-	}
 }
 
-func newWorkflowMockServer(state *workflowMockState) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func (m *workflowMock) statusDefsFor(wf map[string]interface{}) []map[string]interface{} {
+	used := map[string]bool{}
+	for _, s := range wf["statuses"].([]interface{}) {
+		used[s.(map[string]interface{})["statusReference"].(string)] = true
+	}
+	out := []map[string]interface{}{}
+	for _, s := range m.statuses {
+		id := s["id"].(string)
+		if used[id] {
+			out = append(out, map[string]interface{}{
+				"id": id, "statusReference": id, "name": s["name"],
+				"statusCategory": s["statusCategory"].(map[string]interface{})["key"],
+				"scope":          map[string]interface{}{"type": "GLOBAL"}, "description": "",
+			})
+		}
+	}
+	return out
+}
+
+func (m *workflowMock) readResponse(wfs []map[string]interface{}) map[string]interface{} {
+	statuses := []map[string]interface{}{}
+	for _, wf := range wfs {
+		statuses = append(statuses, m.statusDefsFor(wf)...)
+	}
+	return map[string]interface{}{"statuses": statuses, "workflows": wfs}
+}
+
+func writeJSON(w http.ResponseWriter, code int, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func (m *workflowMock) handler() http.HandlerFunc {
+	wfPath := regexp.MustCompile(`^/rest/api/3/workflow/([^/]+)$`)
+	taskPath := regexp.MustCompile(`^/rest/api/3/task/([^/]+)$`)
+	return func(w http.ResponseWriter, r *http.Request) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
 		switch {
-		case r.Method == "POST" && r.URL.Path == "/rest/api/3/workflow":
+		case r.Method == "GET" && r.URL.Path == "/rest/api/3/statuses/search":
+			writeJSON(w, 200, map[string]interface{}{"startAt": 0, "maxResults": 50, "total": len(m.statuses), "isLast": true, "values": m.statuses})
+
+		case r.Method == "POST" && (r.URL.Path == "/rest/api/3/workflows/create/validation" || r.URL.Path == "/rest/api/3/workflows/update/validation"):
+			var body map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			payload, _ := body["payload"].(map[string]interface{})
+			errs := []map[string]interface{}{}
+			for _, raw := range payload["workflows"].([]interface{}) {
+				wf := raw.(map[string]interface{})
+				if m.rejectNamed != "" && wf["name"] == m.rejectNamed {
+					errs = append(errs, map[string]interface{}{"code": "NON_UNIQUE_WORKFLOW_NAME", "level": "ERROR", "type": "WORKFLOW", "message": "workflow name already used"})
+				}
+				for _, t := range wf["transitions"].([]interface{}) {
+					tr := t.(map[string]interface{})
+					if tr["type"] == "INITIAL" {
+						if _, has := tr["conditions"]; has {
+							errs = append(errs, map[string]interface{}{"code": "CONDITIONS_UNSUPPORTED_ON_INITIAL_TRANSITION", "level": "ERROR", "type": "TRANSITION", "message": "initial transitions cannot have conditions"})
+						}
+					}
+				}
+			}
+			writeJSON(w, 200, map[string]interface{}{"errors": errs})
+
+		case r.Method == "POST" && r.URL.Path == "/rest/api/3/workflows/create":
+			if m.conflictOnce {
+				m.conflictOnce = false
+				writeJSON(w, 409, map[string]interface{}{"errorMessages": []string{"another workflow configuration update task is ongoing"}})
+				return
+			}
+			var body map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			m.createBodies = append(m.createBodies, body)
+			wf := body["workflows"].([]interface{})[0].(map[string]interface{})
+			wf["id"] = workflowFixedEntityID
+			wf["version"] = map[string]interface{}{"id": "ver-1", "versionNumber": float64(1)}
+			wf["scope"] = map[string]interface{}{"type": "GLOBAL"}
+			wf["isEditable"] = true
+			m.assignIDs(wf)
+			m.workflows[workflowFixedEntityID] = wf
+			writeJSON(w, 200, m.readResponse([]map[string]interface{}{wf}))
+
+		case r.Method == "POST" && r.URL.Path == "/rest/api/3/workflows":
 			var body struct {
-				Name        string `json:"name"`
-				Description string `json:"description"`
-				Statuses    []struct {
-					ID string `json:"id"`
-				} `json:"statuses"`
+				WorkflowIDs   []string `json:"workflowIds"`
+				WorkflowNames []string `json:"workflowNames"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			var found []map[string]interface{}
+			for id, wf := range m.workflows {
+				for _, want := range body.WorkflowIDs {
+					if want == id {
+						found = append(found, wf)
+					}
+				}
+				for _, want := range body.WorkflowNames {
+					if want == wf["name"] {
+						found = append(found, wf)
+					}
+				}
+			}
+			if found == nil {
+				writeJSON(w, 200, map[string]interface{}{"statuses": []interface{}{}, "workflows": []interface{}{}})
 				return
 			}
-			statusIDs := make([]string, len(body.Statuses))
-			for i, s := range body.Statuses {
-				statusIDs[i] = s.ID
-			}
-			state.set(workflowFixedEntityID, body.Name, body.Description, statusIDs)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"entityId": workflowFixedEntityID,
-				"name":     body.Name,
-			})
+			writeJSON(w, 200, m.readResponse(found))
 
-		case r.Method == "GET" && r.URL.Path == "/rest/api/3/workflow/search":
-			entityID, _, _, _ := state.get()
-			if entityID == "" {
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"values": []interface{}{},
-				})
+		case r.Method == "POST" && r.URL.Path == "/rest/api/3/workflows/update":
+			if m.conflictOnce {
+				m.conflictOnce = false
+				writeJSON(w, 409, map[string]interface{}{"errorMessages": []string{"another workflow configuration update task is ongoing"}})
 				return
 			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"values": []interface{}{state.apiItem()},
-			})
+			var body map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			m.updateBodies = append(m.updateBodies, body)
+			item := body["workflows"].([]interface{})[0].(map[string]interface{})
+			id, _ := item["id"].(string)
+			cur, ok := m.workflows[id]
+			if !ok {
+				w.WriteHeader(404)
+				return
+			}
+			ver := item["version"].(map[string]interface{})
+			curVer := cur["version"].(map[string]interface{})
+			if ver["versionNumber"] != curVer["versionNumber"] {
+				writeJSON(w, 409, map[string]interface{}{"errorMessages": []string{"version mismatch"}})
+				return
+			}
+			for _, k := range []string{"description", "statuses", "transitions", "startPointLayout"} {
+				if v, ok := item[k]; ok {
+					cur[k] = v
+				}
+			}
+			n := int(curVer["versionNumber"].(float64)) + 1
+			cur["version"] = map[string]interface{}{"id": fmt.Sprintf("ver-%d", n), "versionNumber": float64(n)}
+			m.assignIDs(cur)
+			if m.asyncUpdate {
+				writeJSON(w, 200, map[string]interface{}{"statuses": []interface{}{}, "workflows": []interface{}{}, "taskId": "task-7"})
+				return
+			}
+			writeJSON(w, 200, m.readResponse([]map[string]interface{}{cur}))
 
-		case r.Method == "DELETE":
-			entityID, _, _, _ := state.get()
-			expectedPath := "/rest/api/3/workflow/" + entityID
-			if r.URL.Path != expectedPath || entityID == "" {
-				w.WriteHeader(http.StatusNotFound)
+		case r.Method == "GET" && taskPath.MatchString(r.URL.Path):
+			writeJSON(w, 200, map[string]interface{}{"id": "task-7", "status": "COMPLETE"})
+
+		case r.Method == "DELETE" && wfPath.MatchString(r.URL.Path):
+			id := wfPath.FindStringSubmatch(r.URL.Path)[1]
+			if _, ok := m.workflows[id]; !ok {
+				w.WriteHeader(404)
 				return
 			}
-			state.clear()
-			w.WriteHeader(http.StatusNoContent)
+			delete(m.workflows, id)
+			w.WriteHeader(204)
 
 		default:
-			w.WriteHeader(http.StatusNotFound)
+			w.WriteHeader(404)
 		}
-	}))
+	}
 }
 
-func TestAccWorkflowResource_basic(t *testing.T) {
-	name := fmt.Sprintf("tf-test-%s", acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum))
-	state := &workflowMockState{}
+func (m *workflowMock) transition(name string) map[string]interface{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	wf, ok := m.workflows[workflowFixedEntityID]
+	if !ok {
+		return nil
+	}
+	for _, t := range wf["transitions"].([]interface{}) {
+		tr := t.(map[string]interface{})
+		if tr["name"] == name {
+			return tr
+		}
+	}
+	return nil
+}
 
-	mockServer := newWorkflowMockServer(state)
-	defer mockServer.Close()
-
-	t.Setenv("ATLASSIAN_URL", mockServer.URL)
+func setupWorkflowMock(t *testing.T, mock *workflowMock) {
+	t.Helper()
+	srv := httptest.NewServer(mock.handler())
+	t.Cleanup(srv.Close)
+	t.Setenv("ATLASSIAN_URL", srv.URL)
 	t.Setenv("ATLASSIAN_USER", "test@test.com")
 	t.Setenv("ATLASSIAN_TOKEN", "test-token")
+}
+
+const workflowConfigV1 = `resource "atlassian_jira_workflow" "test" {
+  name        = "tf-test-kcare-infra"
+  description = "v1"
+  statuses = [
+    { status_id = "11216" },
+    { status_id = "11217" },
+    { status_id = "11218" },
+    { status_id = "10373" },
+  ]
+  transitions = [
+    {
+      name            = "검토 요청"
+      from            = ["11216"]
+      to              = "11217"
+      allowed_groups  = ["g-1"]
+      assign          = { type = "to-selected-user", account_id = "5b10ac8d82e05b22cc7d4ef5" }
+      required_fields = ["description"]
+    },
+    {
+      name                 = "검토 완료"
+      from                 = ["11217"]
+      to                   = "11218"
+      allowed_groups       = ["g-2"]
+      separation_of_duties = [{ from = "11216", to = "11217" }]
+      assign               = { type = "to-reporter" }
+    },
+    {
+      name          = "승인"
+      from          = ["11218"]
+      to            = "10373"
+      allowed_roles = ["10002"]
+    },
+    {
+      name = "재개"
+      type = "GLOBAL"
+      to   = "11216"
+    },
+  ]
+}`
+
+// v2: new group on 검토 요청, extra required field, 승인 dropped, new transition.
+const workflowConfigV2 = `resource "atlassian_jira_workflow" "test" {
+  name        = "tf-test-kcare-infra"
+  description = "v2"
+  statuses = [
+    { status_id = "11216" },
+    { status_id = "11217" },
+    { status_id = "11218" },
+    { status_id = "10373" },
+  ]
+  transitions = [
+    {
+      name            = "검토 요청"
+      from            = ["11216"]
+      to              = "11217"
+      allowed_groups  = ["g-new"]
+      assign          = { type = "to-selected-user", account_id = "5b10ac8d82e05b22cc7d4ef5" }
+      required_fields = ["description", "customfield_10761"]
+    },
+    {
+      name                 = "검토 완료"
+      from                 = ["11217"]
+      to                   = "11218"
+      allowed_groups       = ["g-2"]
+      separation_of_duties = [{ from = "11216", to = "11217" }]
+      assign               = { type = "to-reporter" }
+    },
+    {
+      name = "반려"
+      from = ["11218"]
+      to   = "11216"
+    },
+    {
+      name = "재개"
+      type = "GLOBAL"
+      to   = "11216"
+    },
+  ]
+}`
+
+func TestAccWorkflowResource_CreateUpdateImport(t *testing.T) {
+	mock := newWorkflowMock()
+	setupWorkflowMock(t, mock)
+	var restrictRuleID, transitionID string // captured after create, must survive the update
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testutil.ProtoV6ProviderFactories,
-		CheckDestroy: func(s *terraform.State) error {
+		CheckDestroy: func(_ *terraform.State) error {
+			mock.mu.Lock()
+			defer mock.mu.Unlock()
+			if _, ok := mock.workflows[workflowFixedEntityID]; ok {
+				return fmt.Errorf("workflow still exists after destroy")
+			}
 			return nil
 		},
 		Steps: []resource.TestStep{
 			{
-				Config: fmt.Sprintf(`resource "atlassian_jira_workflow" "test" {
-  name        = %q
-  description = "A test workflow"
-  statuses    = ["status-uuid-1", "status-uuid-2"]
-}`, name),
+				Config: workflowConfigV1,
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "name", name),
-					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "description", "A test workflow"),
 					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "id", workflowFixedEntityID),
-					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "statuses.#", "2"),
-					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "statuses.0", "status-uuid-1"),
-					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "statuses.1", "status-uuid-2"),
+					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "version", "1"),
+					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "statuses.#", "4"),
+					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "transitions.#", "4"),
+					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "transitions.0.type", "DIRECTED"),
+					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "transitions.0.allowed_groups.0", "g-1"),
+					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "transitions.0.assign.account_id", "5b10ac8d82e05b22cc7d4ef5"),
+					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "transitions.1.separation_of_duties.0.from", "11216"),
+					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "transitions.3.type", "GLOBAL"),
+					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "transitions.3.from.#", "0"),
+					func(_ *terraform.State) error {
+						mock.mu.Lock()
+						defer mock.mu.Unlock()
+						body := mock.createBodies[0]
+						if body["scope"].(map[string]interface{})["type"] != "GLOBAL" {
+							return fmt.Errorf("create must be GLOBAL scope: %v", body["scope"])
+						}
+						defs := body["statuses"].([]interface{})
+						if len(defs) != 4 || defs[0].(map[string]interface{})["name"] != "기안" || defs[0].(map[string]interface{})["statusReference"] != "11216" {
+							return fmt.Errorf("top-level statuses must carry id=reference, name, category: %v", defs[0])
+						}
+						trs := body["workflows"].([]interface{})[0].(map[string]interface{})["transitions"].([]interface{})
+						if trs[0].(map[string]interface{})["type"] != "INITIAL" {
+							return fmt.Errorf("first transition must be INITIAL")
+						}
+						return nil
+					},
+					func(_ *terraform.State) error {
+						tr := mock.transition("검토 요청")
+						transitionID, _ = tr["id"].(string)
+						cond := tr["conditions"].(map[string]interface{})["conditions"].([]interface{})[0].(map[string]interface{})
+						restrictRuleID, _ = cond["id"].(string)
+						if transitionID == "" || restrictRuleID == "" {
+							return fmt.Errorf("mock did not assign ids: %v", tr)
+						}
+						return nil
+					},
 				),
+			},
+			{
+				// No-op apply: plan must be empty (Read reproduces the config).
+				Config:   workflowConfigV1,
+				PlanOnly: true,
+			},
+			{
+				Config: workflowConfigV2,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "version", "2"),
+					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "description", "v2"),
+					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "transitions.0.allowed_groups.0", "g-new"),
+					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "transitions.0.required_fields.#", "2"),
+					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "transitions.2.name", "반려"),
+					func(_ *terraform.State) error {
+						// The restrict rule and the transition keep their server ids across the update.
+						tr := mock.transition("검토 요청")
+						if tr == nil || tr["id"] != transitionID {
+							return fmt.Errorf("transition id not preserved (want %s): %v", transitionID, tr)
+						}
+						cond := tr["conditions"].(map[string]interface{})["conditions"].([]interface{})[0].(map[string]interface{})
+						if cond["id"] != restrictRuleID || cond["parameters"].(map[string]interface{})["groupIds"] != "g-new" {
+							return fmt.Errorf("restrict rule id/params (want id %s): %v", restrictRuleID, cond)
+						}
+						if mock.transition("승인") != nil {
+							return fmt.Errorf("removed transition still on server")
+						}
+						mock.mu.Lock()
+						defer mock.mu.Unlock()
+						upd := mock.updateBodies[0]["workflows"].([]interface{})[0].(map[string]interface{})
+						if upd["version"].(map[string]interface{})["id"] != "ver-1" || upd["version"].(map[string]interface{})["versionNumber"] != float64(1) {
+							return fmt.Errorf("update must send the current version: %v", upd["version"])
+						}
+						if _, ok := upd["statusMappings"]; !ok {
+							return fmt.Errorf("update must send statusMappings (empty)")
+						}
+						return nil
+					},
+				),
+			},
+			{
+				ResourceName:      "atlassian_jira_workflow.test",
+				ImportState:       true,
+				ImportStateVerify: true,
 			},
 		},
 	})
 }
 
-func TestAccWorkflowResource_Read_NotFound(t *testing.T) {
-	name := fmt.Sprintf("tf-test-%s", acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum))
-	state := &workflowMockState{}
-
-	var readCount int
-	var mu sync.Mutex
-
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == "POST" && r.URL.Path == "/rest/api/3/workflow":
-			var body struct {
-				Name        string `json:"name"`
-				Description string `json:"description"`
-				Statuses    []struct {
-					ID string `json:"id"`
-				} `json:"statuses"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				w.WriteHeader(http.StatusBadRequest)
-				return
-			}
-			statusIDs := make([]string, len(body.Statuses))
-			for i, s := range body.Statuses {
-				statusIDs[i] = s.ID
-			}
-			state.set(workflowFixedEntityID, body.Name, body.Description, statusIDs)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"entityId": workflowFixedEntityID,
-				"name":     body.Name,
-			})
-
-		case r.Method == "GET" && r.URL.Path == "/rest/api/3/workflow/search":
-			mu.Lock()
-			readCount++
-			current := readCount
-			mu.Unlock()
-
-			if current <= 1 {
-				// First read: return the workflow
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"values": []interface{}{state.apiItem()},
-				})
-			} else {
-				// Subsequent reads: return empty (workflow deleted out-of-band)
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"values": []interface{}{},
-				})
-			}
-
-		case r.Method == "DELETE":
-			w.WriteHeader(http.StatusNoContent)
-
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer mockServer.Close()
-
-	t.Setenv("ATLASSIAN_URL", mockServer.URL)
-	t.Setenv("ATLASSIAN_USER", "test@test.com")
-	t.Setenv("ATLASSIAN_TOKEN", "test-token")
+func TestAccWorkflowResource_AsyncUpdateAndDrift(t *testing.T) {
+	mock := newWorkflowMock()
+	mock.asyncUpdate = true
+	setupWorkflowMock(t, mock)
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testutil.ProtoV6ProviderFactories,
-		CheckDestroy: func(s *terraform.State) error {
-			return nil
-		},
 		Steps: []resource.TestStep{
+			{Config: workflowConfigV1},
 			{
-				Config: fmt.Sprintf(`resource "atlassian_jira_workflow" "test" {
-  name     = %q
-  statuses = ["status-uuid-1"]
-}`, name),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "name", name),
-				),
+				Config: workflowConfigV2,
+				Check:  resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "version", "2"), // read back after the task completed
 			},
 			{
-				Config: fmt.Sprintf(`resource "atlassian_jira_workflow" "test" {
-  name     = %q
-  statuses = ["status-uuid-1"]
-}`, name),
+				// Deleted out-of-band → Read removes → plan recreates.
+				PreConfig: func() {
+					mock.mu.Lock()
+					delete(mock.workflows, workflowFixedEntityID)
+					mock.mu.Unlock()
+				},
+				RefreshState:       true,
 				ExpectNonEmptyPlan: true,
 			},
 		},
 	})
 }
 
-func TestAccWorkflowResource_Import(t *testing.T) {
-	name := fmt.Sprintf("tf-test-%s", acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum))
-	state := &workflowMockState{}
-
-	mockServer := newWorkflowMockServer(state)
-	defer mockServer.Close()
-
-	t.Setenv("ATLASSIAN_URL", mockServer.URL)
-	t.Setenv("ATLASSIAN_USER", "test@test.com")
-	t.Setenv("ATLASSIAN_TOKEN", "test-token")
+func TestAccWorkflowResource_ValidationErrorsSurface(t *testing.T) {
+	mock := newWorkflowMock()
+	mock.rejectNamed = "tf-test-kcare-infra"
+	setupWorkflowMock(t, mock)
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testutil.ProtoV6ProviderFactories,
-		CheckDestroy: func(s *terraform.State) error {
-			return nil
-		},
 		Steps: []resource.TestStep{
 			{
-				Config: fmt.Sprintf(`resource "atlassian_jira_workflow" "test" {
-  name        = %q
-  description = "Import test workflow"
-  statuses    = ["status-uuid-1"]
-}`, name),
+				Config:      workflowConfigV1,
+				ExpectError: regexp.MustCompile(`NON_UNIQUE_WORKFLOW_NAME`),
 			},
 			{
-				ResourceName:      "atlassian_jira_workflow.test",
-				ImportState:       true,
-				ImportStateId:     workflowFixedEntityID,
-				ImportStateVerify: true,
-				// description and statuses are re-read from API after import
+				Config:      strings.Replace(workflowConfigV1, `to              = "11217"`, `to              = "99999"`, 1),
+				ExpectError: regexp.MustCompile(`not in statuses`),
 			},
 		},
 	})
 }
 
-func TestAccWorkflowDataSource_basic(t *testing.T) {
-	name := fmt.Sprintf("tf-test-%s", acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum))
-	state := &workflowMockState{}
-
-	mockServer := newWorkflowMockServer(state)
-	defer mockServer.Close()
-
-	t.Setenv("ATLASSIAN_URL", mockServer.URL)
-	t.Setenv("ATLASSIAN_USER", "test@test.com")
-	t.Setenv("ATLASSIAN_TOKEN", "test-token")
+func TestAccWorkflowResource_RetriesOnceOn409(t *testing.T) {
+	mock := newWorkflowMock()
+	mock.conflictOnce = true // first create answers 409
+	setupWorkflowMock(t, mock)
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testutil.ProtoV6ProviderFactories,
-		CheckDestroy: func(s *terraform.State) error {
-			return nil
-		},
 		Steps: []resource.TestStep{
 			{
-				Config: fmt.Sprintf(`
-resource "atlassian_jira_workflow" "test" {
-  name        = %q
-  description = "Data source test workflow"
-  statuses    = ["status-uuid-1", "status-uuid-2"]
-}
-
-data "atlassian_jira_workflow" "test" {
-  name = atlassian_jira_workflow.test.name
-}`, name),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("data.atlassian_jira_workflow.test", "name", name),
-					resource.TestCheckResourceAttr("data.atlassian_jira_workflow.test", "id", workflowFixedEntityID),
-					resource.TestCheckResourceAttr("data.atlassian_jira_workflow.test", "description", "Data source test workflow"),
-					resource.TestCheckResourceAttr("data.atlassian_jira_workflow.test", "statuses.#", "2"),
-				),
+				Config: workflowConfigV1,
+				Check:  resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "version", "1"),
+			},
+			{
+				PreConfig: func() {
+					mock.mu.Lock()
+					mock.conflictOnce = true // first update answers 409
+					mock.mu.Unlock()
+				},
+				Config: workflowConfigV2,
+				Check:  resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "version", "2"),
 			},
 		},
 	})

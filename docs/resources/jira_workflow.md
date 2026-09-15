@@ -2,20 +2,56 @@
 page_title: "atlassian_jira_workflow Resource"
 subcategory: ""
 description: |-
-    Manages a Jira Cloud workflow (structure only: name, description, statuses). Transitions are not managed in v1.
+    Manages a company-managed (global) Jira Cloud workflow through the versioned workflow API: its statuses, transitions, who may perform each transition (groups, roles, accounts), separation of duties, the assignee set after a transition and required-field validators. The resource owns the whole workflow: transitions not listed here are removed on apply; rules it does not manage on a listed transition are preserved. An initial transition named Create to the first status is added automatically. Renaming a transition replaces it.
 ---
 
 # atlassian_jira_workflow (Resource)
 
-Manages a Jira Cloud workflow (structure only: name, description, statuses). Transitions are not managed in v1.
+Manages a company-managed (global) Jira Cloud workflow through the versioned workflow API: its statuses, transitions, who may perform each transition (groups, roles, accounts), separation of duties, the assignee set after a transition and required-field validators. The resource owns the whole workflow: transitions not listed here are removed on apply; rules it does not manage on a listed transition are preserved. An initial transition named `Create` to the first status is added automatically. Renaming a transition replaces it.
 
 ## Example Usage
 
 ```terraform
-resource "atlassian_jira_workflow" "example" {
-  name = "Example Workflow"
+# A company-managed workflow for an "infrastructure change" procedure:
+# who may move the issue, who gets assigned, and what must be filled in.
+resource "atlassian_jira_workflow" "infra_change" {
+  name        = "Infrastructure change"
+  description = "Procedure document: drive:<fileId>"
+
   statuses = [
-    atlassian_jira_status.example.id,
+    { status_id = atlassian_jira_status.requested.id }, # first = initial status
+    { status_id = atlassian_jira_status.in_review.id },
+    { status_id = atlassian_jira_status.approved.id },
+    { status_id = atlassian_jira_status.done.id },
+  ]
+
+  transitions = [
+    {
+      name            = "Request review"
+      from            = [atlassian_jira_status.requested.id]
+      to              = atlassian_jira_status.in_review.id
+      allowed_groups  = [atlassian_jira_group.reviewers.group_id]
+      assign          = { type = "to-selected-user", account_id = "5b10ac8d82e05b22cc7d4ef5" }
+      required_fields = ["description"]
+    },
+    {
+      name                 = "Approve"
+      from                 = [atlassian_jira_status.in_review.id]
+      to                   = atlassian_jira_status.approved.id
+      allowed_groups       = [atlassian_jira_group.approvers.group_id]
+      separation_of_duties = [{ from = atlassian_jira_status.requested.id, to = atlassian_jira_status.in_review.id }]
+      assign               = { type = "to-reporter" }
+    },
+    {
+      name = "Complete"
+      from = [atlassian_jira_status.approved.id]
+      to   = atlassian_jira_status.done.id
+    },
+    {
+      name = "Reopen"
+      type = "GLOBAL" # from any status
+      to   = atlassian_jira_status.requested.id
+    },
   ]
 }
 ```
@@ -26,12 +62,70 @@ resource "atlassian_jira_workflow" "example" {
 ### Required
 
 - `name` (String) The name of the workflow. Changing this forces recreation of the resource.
-- `statuses` (List of String) List of status reference UUIDs used by the workflow. Changing this forces recreation of the resource.
+- `statuses` (Attributes List) Existing global statuses used by the workflow, in layout order. The first one is the initial status. (see [below for nested schema](#nestedatt--statuses))
+- `transitions` (Attributes List) Transitions between statuses. Names must be unique within the workflow. (see [below for nested schema](#nestedatt--transitions))
 
 ### Optional
 
-- `description` (String) The description of the workflow. Changing this forces recreation of the resource.
+- `description` (String) The description of the workflow.
 
 ### Read-Only
 
 - `id` (String) The entity ID (UUID) of the workflow.
+- `version` (Number) The document version number Jira assigns; used as an optimistic lock on update.
+
+<a id="nestedatt--statuses"></a>
+### Nested Schema for `statuses`
+
+Required:
+
+- `status_id` (String) The ID of an existing global status (see `atlassian_jira_status`).
+
+
+<a id="nestedatt--transitions"></a>
+### Nested Schema for `transitions`
+
+Required:
+
+- `name` (String) The transition name shown to users. Unique within the workflow; `Create` is reserved.
+- `to` (String) Status ID the transition leads to.
+
+Optional:
+
+- `allowed_account_ids` (List of String) Account IDs that may perform the transition.
+- `allowed_groups` (List of String) Group IDs whose members may perform the transition (system:restrict-issue-transition).
+- `allowed_roles` (List of String) Project role IDs whose members may perform the transition.
+- `assign` (Attributes) Assignee set after the transition (system:change-assignee post function). (see [below for nested schema](#nestedatt--transitions--assign))
+- `from` (List of String) Status IDs the transition can start from. Required for DIRECTED, must be empty for GLOBAL.
+- `required_fields` (List of String) Field IDs that must be filled before the transition (one system:validate-field-value validator each).
+- `separation_of_duties` (Attributes List) Users who moved the issue from `from` to `to` may not perform this transition (system:separation-of-duties). (see [below for nested schema](#nestedatt--transitions--separation_of_duties))
+- `type` (String) `DIRECTED` (from specific statuses) or `GLOBAL` (from any status). Defaults to `DIRECTED`.
+
+<a id="nestedatt--transitions--assign"></a>
+### Nested Schema for `transitions.assign`
+
+Required:
+
+- `type` (String) One of `to-selected-user`, `to-reporter`, `to-current-user`, `to-lead`, `to-unassigned`, `to-default-user`.
+
+Optional:
+
+- `account_id` (String) Account ID to assign; required when `type` is `to-selected-user`.
+
+
+<a id="nestedatt--transitions--separation_of_duties"></a>
+### Nested Schema for `transitions.separation_of_duties`
+
+Required:
+
+- `from` (String) Status ID the earlier move started from.
+- `to` (String) Status ID the earlier move led to.
+
+## Import
+
+Import is supported using the following syntax:
+
+```shell
+# Import by workflow entity ID (UUID). All transitions and rules are read into state.
+terraform import atlassian_jira_workflow.infra_change aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+```

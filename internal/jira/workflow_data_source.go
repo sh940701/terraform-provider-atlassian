@@ -3,7 +3,6 @@ package jira
 import (
 	"context"
 	"fmt"
-	"net/http"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -22,37 +21,57 @@ type workflowDataSource struct {
 	client *atlassian.Client
 }
 
-type workflowDataSourceModel struct {
-	Name        types.String `tfsdk:"name"`
-	ID          types.String `tfsdk:"id"`
-	Description types.String `tfsdk:"description"`
-	Statuses    types.List   `tfsdk:"statuses"`
-}
-
 func (d *workflowDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_jira_workflow"
 }
 
 func (d *workflowDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
+	stringList := func(desc string) schema.ListAttribute {
+		return schema.ListAttribute{Description: desc, Computed: true, ElementType: types.StringType}
+	}
 	resp.Schema = schema.Schema{
-		Description: "Use this data source to look up a Jira Cloud workflow by name.",
+		Description: "Use this data source to read a company-managed Jira Cloud workflow by name, including its transitions and transition rules.",
 		Attributes: map[string]schema.Attribute{
-			"name": schema.StringAttribute{
-				Description: "The name of the workflow to look up.",
-				Required:    true,
-			},
-			"id": schema.StringAttribute{
-				Description: "The entity ID (UUID) of the workflow.",
+			"name":        schema.StringAttribute{Description: "The name of the workflow to look up.", Required: true},
+			"id":          schema.StringAttribute{Description: "The entity ID (UUID) of the workflow.", Computed: true},
+			"description": schema.StringAttribute{Description: "The description of the workflow.", Computed: true},
+			"version":     schema.Int64Attribute{Description: "The document version number.", Computed: true},
+			"statuses": schema.ListNestedAttribute{
+				Description: "Statuses used by the workflow, in layout order.",
 				Computed:    true,
+				NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+					"status_id": schema.StringAttribute{Description: "The status ID.", Computed: true},
+				}},
 			},
-			"description": schema.StringAttribute{
-				Description: "The description of the workflow.",
+			"transitions": schema.ListNestedAttribute{
+				Description: "Transitions (the initial transition is not listed).",
 				Computed:    true,
-			},
-			"statuses": schema.ListAttribute{
-				Description: "List of status IDs used by the workflow.",
-				Computed:    true,
-				ElementType: types.StringType,
+				NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+					"name":                schema.StringAttribute{Description: "Transition name.", Computed: true},
+					"type":                schema.StringAttribute{Description: "`DIRECTED` or `GLOBAL`.", Computed: true},
+					"from":                stringList("Status IDs the transition starts from."),
+					"to":                  schema.StringAttribute{Description: "Status ID the transition leads to.", Computed: true},
+					"allowed_groups":      stringList("Group IDs allowed to perform the transition."),
+					"allowed_roles":       stringList("Project role IDs allowed to perform the transition."),
+					"allowed_account_ids": stringList("Account IDs allowed to perform the transition."),
+					"separation_of_duties": schema.ListNestedAttribute{
+						Description: "Separation-of-duties rules.",
+						Computed:    true,
+						NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+							"from": schema.StringAttribute{Description: "Status ID the earlier move started from.", Computed: true},
+							"to":   schema.StringAttribute{Description: "Status ID the earlier move led to.", Computed: true},
+						}},
+					},
+					"assign": schema.SingleNestedAttribute{
+						Description: "Assignee post function, if any.",
+						Computed:    true,
+						Attributes: map[string]schema.Attribute{
+							"type":       schema.StringAttribute{Description: "Assignee rule type.", Computed: true},
+							"account_id": schema.StringAttribute{Description: "Account ID for `to-selected-user`.", Computed: true},
+						},
+					},
+					"required_fields": stringList("Field IDs required by validators."),
+				}},
 			},
 		},
 	}
@@ -76,57 +95,26 @@ func (d *workflowDataSource) Configure(_ context.Context, req datasource.Configu
 }
 
 func (d *workflowDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var config workflowDataSourceModel
+	var config workflowResourceModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	apiPath := fmt.Sprintf("/rest/api/3/workflow/search?workflowName=%s&expand=statuses", atlassian.QueryEscape(config.Name.ValueString()))
-
-	var searchResp workflowSearchResponse
-	statusCode, err := d.client.GetWithStatus(ctx, apiPath, &searchResp)
+	name := config.Name.ValueString()
+	doc, refToID, found, err := fetchWorkflow(ctx, d.client, workflowReadRequest{WorkflowNames: []string{name}})
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading workflow", err.Error())
 		return
 	}
-
-	if statusCode == http.StatusNotFound {
-		resp.Diagnostics.AddError(
-			"Workflow not found",
-			fmt.Sprintf("No workflow found with name %q", config.Name.ValueString()),
-		)
+	if !found || doc.Name != name {
+		resp.Diagnostics.AddError("Workflow not found", fmt.Sprintf("No workflow found with name %q", name))
 		return
 	}
 
-	// Find the workflow by name in the response
-	name := config.Name.ValueString()
-	for _, wf := range searchResp.Values {
-		if wf.ID.Name == name {
-			config.ID = types.StringValue(wf.ID.EntityID)
-			config.Description = types.StringValue(wf.Description)
-
-			// Use numeric status ID to be consistent with the resource's create path.
-			statusRefs := make([]string, len(wf.Statuses))
-			for i, s := range wf.Statuses {
-				statusRefs[i] = s.ID
-			}
-
-			statusList, diags := types.ListValueFrom(ctx, types.StringType, statusRefs)
-			resp.Diagnostics.Append(diags...)
-			if resp.Diagnostics.HasError() {
-				return
-			}
-
-			config.Statuses = statusList
-
-			resp.Diagnostics.Append(resp.State.Set(ctx, &config)...)
-			return
-		}
+	resp.Diagnostics.Append(modelFromDocument(ctx, &config, doc, refToID)...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
-
-	resp.Diagnostics.AddError(
-		"Workflow not found",
-		fmt.Sprintf("No workflow found with name %q", name),
-	)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &config)...)
 }

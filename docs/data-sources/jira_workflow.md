@@ -2,18 +2,22 @@
 page_title: "atlassian_jira_workflow Data Source"
 subcategory: ""
 description: |-
-    Use this data source to look up a Jira Cloud workflow by name.
+    Use this data source to read a company-managed Jira Cloud workflow by name, including its transitions and transition rules.
 ---
 
 # atlassian_jira_workflow (Data Source)
 
-Use this data source to look up a Jira Cloud workflow by name.
+Use this data source to read a company-managed Jira Cloud workflow by name, including its transitions and transition rules.
 
 ## Example Usage
 
 ```terraform
-data "atlassian_jira_workflow" "example" {
-  name = "Software Simplified Workflow"
+data "atlassian_jira_workflow" "infra_change" {
+  name = "Infrastructure change"
+}
+
+output "review_transition_groups" {
+  value = data.atlassian_jira_workflow.infra_change.transitions[0].allowed_groups
 }
 ```
 
@@ -28,4 +32,47 @@ data "atlassian_jira_workflow" "example" {
 
 - `description` (String) The description of the workflow.
 - `id` (String) The entity ID (UUID) of the workflow.
-- `statuses` (List of String) List of status IDs used by the workflow.
+- `statuses` (Attributes List) Statuses used by the workflow, in layout order. (see [below for nested schema](#nestedatt--statuses))
+- `transitions` (Attributes List) Transitions (the initial transition is not listed). (see [below for nested schema](#nestedatt--transitions))
+- `version` (Number) The document version number.
+
+<a id="nestedatt--statuses"></a>
+### Nested Schema for `statuses`
+
+Read-Only:
+
+- `status_id` (String) The status ID.
+
+
+<a id="nestedatt--transitions"></a>
+### Nested Schema for `transitions`
+
+Read-Only:
+
+- `allowed_account_ids` (List of String) Account IDs allowed to perform the transition.
+- `allowed_groups` (List of String) Group IDs allowed to perform the transition.
+- `allowed_roles` (List of String) Project role IDs allowed to perform the transition.
+- `assign` (Attributes) Assignee post function, if any. (see [below for nested schema](#nestedatt--transitions--assign))
+- `from` (List of String) Status IDs the transition starts from.
+- `name` (String) Transition name.
+- `required_fields` (List of String) Field IDs required by validators.
+- `separation_of_duties` (Attributes List) Separation-of-duties rules. (see [below for nested schema](#nestedatt--transitions--separation_of_duties))
+- `to` (String) Status ID the transition leads to.
+- `type` (String) `DIRECTED` or `GLOBAL`.
+
+<a id="nestedatt--transitions--assign"></a>
+### Nested Schema for `transitions.assign`
+
+Read-Only:
+
+- `account_id` (String) Account ID for `to-selected-user`.
+- `type` (String) Assignee rule type.
+
+
+<a id="nestedatt--transitions--separation_of_duties"></a>
+### Nested Schema for `transitions.separation_of_duties`
+
+Read-Only:
+
+- `from` (String) Status ID the earlier move started from.
+- `to` (String) Status ID the earlier move led to.
