@@ -1,0 +1,624 @@
+{
+  "statuses": [
+    {
+      "id": "11247",
+      "statusReference": "11247",
+      "name": "승인 대기",
+      "statusCategory": "IN_PROGRESS",
+      "scope": {
+        "type": "PROJECT",
+        "project": {
+          "id": "10481"
+        }
+      },
+      "description": ""
+    },
+    {
+      "id": "11251",
+      "statusReference": "11251",
+      "name": "구현 중",
+      "statusCategory": "IN_PROGRESS",
+      "scope": {
+        "type": "PROJECT",
+        "project": {
+          "id": "10481"
+        }
+      },
+      "description": ""
+    },
+    {
+      "id": "11142",
+      "statusReference": "11142",
+      "name": "In Progress",
+      "statusCategory": "IN_PROGRESS",
+      "scope": {
+        "type": "PROJECT",
+        "project": {
+          "id": "10481"
+        }
+      },
+      "description": ""
+    },
+    {
+      "id": "11252",
+      "statusReference": "11252",
+      "name": "완료",
+      "statusCategory": "DONE",
+      "scope": {
+        "type": "PROJECT",
+        "project": {
+          "id": "10481"
+        }
+      },
+      "description": ""
+    },
+    {
+      "id": "11141",
+      "statusReference": "11141",
+      "name": "To Do",
+      "statusCategory": "TODO",
+      "scope": {
+        "type": "PROJECT",
+        "project": {
+          "id": "10481"
+        }
+      },
+      "description": ""
+    },
+    {
+      "id": "11249",
+      "statusReference": "11249",
+      "name": "검증 중",
+      "statusCategory": "IN_PROGRESS",
+      "scope": {
+        "type": "PROJECT",
+        "project": {
+          "id": "10481"
+        }
+      },
+      "description": ""
+    },
+    {
+      "id": "11248",
+      "statusReference": "11248",
+      "name": "검토 중",
+      "statusCategory": "IN_PROGRESS",
+      "scope": {
+        "type": "PROJECT",
+        "project": {
+          "id": "10481"
+        }
+      },
+      "description": ""
+    },
+    {
+      "id": "11250",
+      "statusReference": "11250",
+      "name": "요청",
+      "statusCategory": "TODO",
+      "scope": {
+        "type": "PROJECT",
+        "project": {
+          "id": "10481"
+        }
+      },
+      "description": ""
+    },
+    {
+      "id": "11143",
+      "statusReference": "11143",
+      "name": "Done",
+      "statusCategory": "DONE",
+      "scope": {
+        "type": "PROJECT",
+        "project": {
+          "id": "10481"
+        }
+      },
+      "description": ""
+    }
+  ],
+  "workflows": [
+    {
+      "scope": {
+        "type": "PROJECT",
+        "project": {
+          "id": "10481"
+        }
+      },
+      "version": {
+        "versionNumber": 6,
+        "id": "d9858e4b-7e06-437d-9edb-81670522fe65"
+      },
+      "id": "818bc586-a032-4682-935f-ebc7310e391f",
+      "name": "Workflow: c5622458-e075-4711-b875-275a9baa5bf7",
+      "description": "개발 변경 v2 — 개발(검토·검증 요청)·검토(검토 완료·완료·보완·되돌리기)·승인(승인·반려)·직무 분리",
+      "isEditable": true,
+      "startPointLayout": {
+        "x": 1500.0,
+        "y": 0.0
+      },
+      "statuses": [
+        {
+          "statusReference": "11250",
+          "layout": {
+            "x": 1700.0,
+            "y": 80.0
+          },
+          "properties": {},
+          "deprecated": false
+        },
+        {
+          "statusReference": "11248",
+          "layout": {
+            "x": 2392.15625,
+            "y": 40.0
+          },
+          "properties": {},
+          "deprecated": false
+        },
+        {
+          "statusReference": "11247",
+          "layout": {
+            "x": 2241.484375,
+            "y": 40.0
+          },
+          "properties": {},
+          "deprecated": false
+        },
+        {
+          "statusReference": "11251",
+          "layout": {
+            "x": 1900.0,
+            "y": 80.0
+          },
+          "properties": {},
+          "deprecated": false
+        },
+        {
+          "statusReference": "11249",
+          "layout": {
+            "x": 2533.3125,
+            "y": 40.0
+          },
+          "properties": {},
+          "deprecated": false
+        },
+        {
+          "statusReference": "11252",
+          "layout": {
+            "x": 2100.0,
+            "y": 80.0
+          },
+          "properties": {},
+          "deprecated": false
+        }
+      ],
+      "transitions": [
+        {
+          "id": "1",
+          "type": "INITIAL",
+          "toStatusReference": "11250",
+          "links": [],
+          "name": "Create",
+          "description": "",
+          "actions": [],
+          "validators": [],
+          "triggers": [],
+          "properties": {}
+        },
+        {
+          "id": "6",
+          "type": "DIRECTED",
+          "toStatusReference": "11248",
+          "links": [
+            {
+              "fromStatusReference": "11250",
+              "fromPort": 0,
+              "toPort": 1
+            }
+          ],
+          "name": "검토 요청",
+          "description": "",
+          "actions": [
+            {
+              "ruleKey": "system:change-assignee",
+              "parameters": {
+                "type": "to-selected-user",
+                "accountId": "5b10ac8d82e05b22cc7d4ef5"
+              },
+              "id": "207757776"
+            }
+          ],
+          "validators": [
+            {
+              "ruleKey": "system:validate-field-value",
+              "parameters": {
+                "ruleType": "fieldRequired",
+                "fieldsRequired": "description",
+                "ignoreContext": "true",
+                "errorMessage": "변경 내용·영향 범위·원복 계획을 설명에 적어야 검토를 요청할 수 있다"
+              },
+              "id": "99e5297e-9691-44a2-9350-80dba9589c1e"
+            }
+          ],
+          "conditions": {
+            "operation": "ALL",
+            "conditionGroups": [],
+            "conditions": [
+              {
+                "ruleKey": "system:restrict-issue-transition",
+                "parameters": {
+                  "accountIds": "",
+                  "roleIds": "",
+                  "groupIds": "00000000-0000-0000-0000-000000000001",
+                  "permissionKeys": "",
+                  "groupCustomFields": "",
+                  "allowUserCustomFields": "",
+                  "denyUserCustomFields": ""
+                },
+                "id": "35739a78-8fe7-4be0-83d9-26358f71d2ff"
+              }
+            ]
+          },
+          "triggers": [],
+          "properties": {}
+        },
+        {
+          "id": "11",
+          "type": "DIRECTED",
+          "toStatusReference": "11247",
+          "links": [
+            {
+              "fromStatusReference": "11248",
+              "fromPort": 0,
+              "toPort": 1
+            }
+          ],
+          "name": "검토 완료",
+          "description": "",
+          "actions": [
+            {
+              "ruleKey": "system:change-assignee",
+              "parameters": {
+                "type": "to-selected-user",
+                "accountId": "70121:58fadda0-3e3a-4c40-8f00-7c46086793b0"
+              },
+              "id": "825250339"
+            }
+          ],
+          "validators": [],
+          "conditions": {
+            "operation": "ALL",
+            "conditionGroups": [],
+            "conditions": [
+              {
+                "ruleKey": "system:restrict-issue-transition",
+                "parameters": {
+                  "accountIds": "",
+                  "roleIds": "",
+                  "groupIds": "6acec0cf-482a-414b-acaf-e8dd570a7abd",
+                  "permissionKeys": "",
+                  "groupCustomFields": "",
+                  "allowUserCustomFields": "",
+                  "denyUserCustomFields": ""
+                },
+                "id": "f883b81b-733b-47b1-afa6-e9d963968056"
+              },
+              {
+                "ruleKey": "system:separation-of-duties",
+                "parameters": {
+                  "fromStatusId": "11250",
+                  "toStatusId": "11248"
+                },
+                "id": "bc5e9e78-e983-437b-a9f2-f79db1fe62b4"
+              }
+            ]
+          },
+          "triggers": [],
+          "properties": {}
+        },
+        {
+          "id": "4",
+          "type": "DIRECTED",
+          "toStatusReference": "11251",
+          "links": [
+            {
+              "fromStatusReference": "11247",
+              "fromPort": 0,
+              "toPort": 1
+            }
+          ],
+          "name": "승인",
+          "description": "",
+          "actions": [
+            {
+              "ruleKey": "system:change-assignee",
+              "parameters": {
+                "type": "to-selected-user",
+                "accountId": "5b10ac8d82e05b22cc7d4ef5"
+              },
+              "id": "1628123081"
+            }
+          ],
+          "validators": [],
+          "conditions": {
+            "operation": "ALL",
+            "conditionGroups": [],
+            "conditions": [
+              {
+                "ruleKey": "system:restrict-issue-transition",
+                "parameters": {
+                  "accountIds": "",
+                  "roleIds": "",
+                  "groupIds": "ee62b607-c99a-4349-bb67-6f361ce8e499",
+                  "permissionKeys": "",
+                  "groupCustomFields": "",
+                  "allowUserCustomFields": "",
+                  "denyUserCustomFields": ""
+                },
+                "id": "a7a2bb15-2c5b-44b1-b8f2-8f6b82fc5f39"
+              },
+              {
+                "ruleKey": "system:separation-of-duties",
+                "parameters": {
+                  "fromStatusId": "11250",
+                  "toStatusId": "11248"
+                },
+                "id": "4e4de2c6-c2e7-44bd-86f3-ea9247e5bc26"
+              },
+              {
+                "ruleKey": "system:separation-of-duties",
+                "parameters": {
+                  "fromStatusId": "11248",
+                  "toStatusId": "11247"
+                },
+                "id": "864207b8-455a-4657-b311-e452843df38f"
+              }
+            ]
+          },
+          "triggers": [],
+          "properties": {}
+        },
+        {
+          "id": "5",
+          "type": "DIRECTED",
+          "toStatusReference": "11250",
+          "links": [
+            {
+              "fromStatusReference": "11247",
+              "fromPort": 0,
+              "toPort": 1
+            }
+          ],
+          "name": "반려",
+          "description": "",
+          "actions": [
+            {
+              "ruleKey": "system:change-assignee",
+              "parameters": {
+                "type": "to-selected-user",
+                "accountId": "5b10ac8d82e05b22cc7d4ef5"
+              },
+              "id": "496481102"
+            }
+          ],
+          "validators": [],
+          "conditions": {
+            "operation": "ALL",
+            "conditionGroups": [],
+            "conditions": [
+              {
+                "ruleKey": "system:restrict-issue-transition",
+                "parameters": {
+                  "accountIds": "",
+                  "roleIds": "",
+                  "groupIds": "ee62b607-c99a-4349-bb67-6f361ce8e499",
+                  "permissionKeys": "",
+                  "groupCustomFields": "",
+                  "allowUserCustomFields": "",
+                  "denyUserCustomFields": ""
+                },
+                "id": "07cbe1c7-196c-4cd9-b3eb-276305f280f4"
+              }
+            ]
+          },
+          "triggers": [],
+          "properties": {}
+        },
+        {
+          "id": "13",
+          "type": "DIRECTED",
+          "toStatusReference": "11249",
+          "links": [
+            {
+              "fromStatusReference": "11251",
+              "fromPort": 0,
+              "toPort": 1
+            }
+          ],
+          "name": "검증 요청",
+          "description": "",
+          "actions": [
+            {
+              "ruleKey": "system:change-assignee",
+              "parameters": {
+                "type": "to-selected-user",
+                "accountId": "5b10ac8d82e05b22cc7d4ef5"
+              },
+              "id": "248647528"
+            }
+          ],
+          "validators": [],
+          "conditions": {
+            "operation": "ALL",
+            "conditionGroups": [],
+            "conditions": [
+              {
+                "ruleKey": "system:restrict-issue-transition",
+                "parameters": {
+                  "accountIds": "",
+                  "roleIds": "",
+                  "groupIds": "00000000-0000-0000-0000-000000000001",
+                  "permissionKeys": "",
+                  "groupCustomFields": "",
+                  "allowUserCustomFields": "",
+                  "denyUserCustomFields": ""
+                },
+                "id": "cf44b6e6-0cc2-4f74-b045-7428e1bc3605"
+              }
+            ]
+          },
+          "triggers": [],
+          "properties": {}
+        },
+        {
+          "id": "8",
+          "type": "DIRECTED",
+          "toStatusReference": "11252",
+          "links": [
+            {
+              "fromStatusReference": "11249",
+              "fromPort": 0,
+              "toPort": 1
+            }
+          ],
+          "name": "완료",
+          "description": "",
+          "actions": [
+            {
+              "ruleKey": "system:change-assignee",
+              "parameters": {
+                "type": "to-selected-user",
+                "accountId": "5b10ac8d82e05b22cc7d4ef5"
+              },
+              "id": "1360696886"
+            }
+          ],
+          "validators": [],
+          "conditions": {
+            "operation": "ALL",
+            "conditionGroups": [],
+            "conditions": [
+              {
+                "ruleKey": "system:restrict-issue-transition",
+                "parameters": {
+                  "accountIds": "",
+                  "roleIds": "",
+                  "groupIds": "6acec0cf-482a-414b-acaf-e8dd570a7abd",
+                  "permissionKeys": "",
+                  "groupCustomFields": "",
+                  "allowUserCustomFields": "",
+                  "denyUserCustomFields": ""
+                },
+                "id": "d81de337-8913-4fa8-9aba-72a26b45b22c"
+              },
+              {
+                "ruleKey": "system:separation-of-duties",
+                "parameters": {
+                  "fromStatusId": "11251",
+                  "toStatusId": "11249"
+                },
+                "id": "3f29a105-776a-4ece-a078-e449aad9153b"
+              }
+            ]
+          },
+          "triggers": [],
+          "properties": {}
+        },
+        {
+          "id": "7",
+          "type": "DIRECTED",
+          "toStatusReference": "11251",
+          "links": [
+            {
+              "fromStatusReference": "11249",
+              "fromPort": 0,
+              "toPort": 1
+            }
+          ],
+          "name": "보완 필요",
+          "description": "",
+          "actions": [
+            {
+              "ruleKey": "system:change-assignee",
+              "parameters": {
+                "type": "to-selected-user",
+                "accountId": "5b10ac8d82e05b22cc7d4ef5"
+              },
+              "id": "1382668384"
+            }
+          ],
+          "validators": [],
+          "conditions": {
+            "operation": "ALL",
+            "conditionGroups": [],
+            "conditions": [
+              {
+                "ruleKey": "system:restrict-issue-transition",
+                "parameters": {
+                  "accountIds": "",
+                  "roleIds": "",
+                  "groupIds": "6acec0cf-482a-414b-acaf-e8dd570a7abd",
+                  "permissionKeys": "",
+                  "groupCustomFields": "",
+                  "allowUserCustomFields": "",
+                  "denyUserCustomFields": ""
+                },
+                "id": "09dd8d5e-6cb9-44cd-8892-8ff0e1323437"
+              }
+            ]
+          },
+          "triggers": [],
+          "properties": {}
+        },
+        {
+          "id": "9",
+          "type": "DIRECTED",
+          "toStatusReference": "11251",
+          "links": [
+            {
+              "fromStatusReference": "11252",
+              "fromPort": 0,
+              "toPort": 1
+            }
+          ],
+          "name": "되돌리기",
+          "description": "",
+          "actions": [
+            {
+              "ruleKey": "system:change-assignee",
+              "parameters": {
+                "type": "to-selected-user",
+                "accountId": "5b10ac8d82e05b22cc7d4ef5"
+              },
+              "id": "300342876"
+            }
+          ],
+          "validators": [],
+          "conditions": {
+            "operation": "ALL",
+            "conditionGroups": [],
+            "conditions": [
+              {
+                "ruleKey": "system:restrict-issue-transition",
+                "parameters": {
+                  "accountIds": "",
+                  "roleIds": "",
+                  "groupIds": "6acec0cf-482a-414b-acaf-e8dd570a7abd",
+                  "permissionKeys": "",
+                  "groupCustomFields": "",
+                  "allowUserCustomFields": "",
+                  "denyUserCustomFields": ""
+                },
+                "id": "235c3e96-6388-42da-9fb9-0e4b3a96a8e8"
+              }
+            ]
+          },
+          "triggers": [],
+          "properties": {}
+        }
+      ]
+    }
+  ]
+}

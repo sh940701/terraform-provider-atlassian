@@ -1,0 +1,232 @@
+{
+  "scope": {
+    "type": "GLOBAL"
+  },
+  "statuses": [
+    {
+      "id": "11216",
+      "statusReference": "83859f12-fe09-481d-9031-e3d3a27e496f",
+      "name": "기안",
+      "statusCategory": "TODO"
+    },
+    {
+      "id": "11217",
+      "statusReference": "3a260c45-46e4-4613-9d8e-087d06022ed5",
+      "name": "검토 중",
+      "statusCategory": "IN_PROGRESS"
+    },
+    {
+      "id": "11218",
+      "statusReference": "ae486fb9-c5a1-49c9-bc68-4f1ed538abf2",
+      "name": "승인 대기",
+      "statusCategory": "IN_PROGRESS"
+    },
+    {
+      "id": "10373",
+      "statusReference": "e5fd8d6e-9d91-4623-81cf-3270b20fbf9f",
+      "name": "완료",
+      "statusCategory": "DONE"
+    }
+  ],
+  "workflows": [
+    {
+      "name": "KCARE 스파이크 검증용 (생성 안 함)",
+      "description": "validation only",
+      "startPointLayout": {
+        "x": 0,
+        "y": 0
+      },
+      "statuses": [
+        {
+          "statusReference": "83859f12-fe09-481d-9031-e3d3a27e496f",
+          "properties": {},
+          "layout": {
+            "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "statusReference": "3a260c45-46e4-4613-9d8e-087d06022ed5",
+          "properties": {},
+          "layout": {
+            "x": 100,
+            "y": 0
+          }
+        },
+        {
+          "statusReference": "ae486fb9-c5a1-49c9-bc68-4f1ed538abf2",
+          "properties": {},
+          "layout": {
+            "x": 200,
+            "y": 0
+          }
+        },
+        {
+          "statusReference": "e5fd8d6e-9d91-4623-81cf-3270b20fbf9f",
+          "properties": {},
+          "layout": {
+            "x": 300,
+            "y": 0
+          }
+        }
+      ],
+      "transitions": [
+        {
+          "id": "1",
+          "name": "Create",
+          "type": "INITIAL",
+          "toStatusReference": "83859f12-fe09-481d-9031-e3d3a27e496f",
+          "links": [],
+          "actions": [],
+          "validators": [],
+          "triggers": [],
+          "properties": {}
+        },
+        {
+          "id": "11",
+          "name": "검토 요청",
+          "type": "DIRECTED",
+          "toStatusReference": "3a260c45-46e4-4613-9d8e-087d06022ed5",
+          "links": [
+            {
+              "fromStatusReference": "83859f12-fe09-481d-9031-e3d3a27e496f",
+              "fromPort": 0,
+              "toPort": 1
+            }
+          ],
+          "actions": [
+            {
+              "ruleKey": "system:change-assignee",
+              "parameters": {
+                "type": "to-selected-user",
+                "accountId": "5b10ac8d82e05b22cc7d4ef5"
+              }
+            }
+          ],
+          "validators": [
+            {
+              "ruleKey": "system:validate-field-value",
+              "parameters": {
+                "ruleType": "fieldRequired",
+                "fieldsRequired": "description",
+                "ignoreContext": "true",
+                "errorMessage": "설명 필수"
+              }
+            }
+          ],
+          "triggers": [],
+          "properties": {},
+          "conditions": {
+            "operation": "ALL",
+            "conditionGroups": [],
+            "conditions": [
+              {
+                "ruleKey": "system:restrict-issue-transition",
+                "parameters": {
+                  "accountIds": "",
+                  "roleIds": "",
+                  "groupIds": "00000000-0000-0000-0000-000000000001",
+                  "permissionKeys": "",
+                  "groupCustomFields": "",
+                  "allowUserCustomFields": "",
+                  "denyUserCustomFields": ""
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "21",
+          "name": "검토 완료",
+          "type": "DIRECTED",
+          "toStatusReference": "ae486fb9-c5a1-49c9-bc68-4f1ed538abf2",
+          "links": [
+            {
+              "fromStatusReference": "3a260c45-46e4-4613-9d8e-087d06022ed5",
+              "fromPort": 0,
+              "toPort": 1
+            }
+          ],
+          "actions": [
+            {
+              "ruleKey": "system:change-assignee",
+              "parameters": {
+                "type": "to-reporter"
+              }
+            }
+          ],
+          "validators": [],
+          "triggers": [],
+          "properties": {},
+          "conditions": {
+            "operation": "ALL",
+            "conditionGroups": [],
+            "conditions": [
+              {
+                "ruleKey": "system:restrict-issue-transition",
+                "parameters": {
+                  "accountIds": "",
+                  "roleIds": "",
+                  "groupIds": "00000000-0000-0000-0000-000000000001",
+                  "permissionKeys": "",
+                  "groupCustomFields": "",
+                  "allowUserCustomFields": "",
+                  "denyUserCustomFields": ""
+                }
+              },
+              {
+                "ruleKey": "system:separation-of-duties",
+                "parameters": {
+                  "fromStatusId": "83859f12-fe09-481d-9031-e3d3a27e496f",
+                  "toStatusId": "3a260c45-46e4-4613-9d8e-087d06022ed5"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "31",
+          "name": "승인",
+          "type": "DIRECTED",
+          "toStatusReference": "e5fd8d6e-9d91-4623-81cf-3270b20fbf9f",
+          "links": [
+            {
+              "fromStatusReference": "ae486fb9-c5a1-49c9-bc68-4f1ed538abf2",
+              "fromPort": 0,
+              "toPort": 1
+            }
+          ],
+          "actions": [
+            {
+              "ruleKey": "system:change-assignee",
+              "parameters": {
+                "type": "to-current-user"
+              }
+            }
+          ],
+          "validators": [],
+          "triggers": [],
+          "properties": {},
+          "conditions": {
+            "operation": "ALL",
+            "conditionGroups": [],
+            "conditions": [
+              {
+                "ruleKey": "system:restrict-issue-transition",
+                "parameters": {
+                  "accountIds": "",
+                  "roleIds": "",
+                  "groupIds": "00000000-0000-0000-0000-000000000001",
+                  "permissionKeys": "",
+                  "groupCustomFields": "",
+                  "allowUserCustomFields": "",
+                  "denyUserCustomFields": ""
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

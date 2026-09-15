@@ -40,9 +40,9 @@ type workflowResourceModel struct {
 
 // API request/response types
 
-// workflowCreateRequest represents the POST /rest/api/3/workflow request body.
+// legacyWorkflowCreateRequest represents the POST /rest/api/3/workflow request body.
 // Uses the legacy (non-versioned) workflow API which accepts status IDs directly.
-type workflowCreateRequest struct {
+type legacyWorkflowCreateRequest struct {
 	Name        string                    `json:"name"`
 	Description string                    `json:"description,omitempty"`
 	Statuses    []workflowStatusCreateRef `json:"statuses"`
@@ -172,7 +172,7 @@ func (r *workflowResource) Create(ctx context.Context, req resource.CreateReques
 		{Name: "Create", To: statusIDs[0], Type: "initial"},
 	}
 
-	body := workflowCreateRequest{
+	body := legacyWorkflowCreateRequest{
 		Name:        plan.Name.ValueString(),
 		Description: plan.Description.ValueString(),
 		Statuses:    statusRefs,
