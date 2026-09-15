@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -28,10 +27,6 @@ var (
 	_ resource.Resource                = &workflowResource{}
 	_ resource.ResourceWithImportState = &workflowResource{}
 )
-
-// workflowConflictRetryDelay is how long to wait before the single retry
-// after a 409 ("another workflow configuration update task is ongoing").
-var workflowConflictRetryDelay = 3 * time.Second
 
 // NewWorkflowResource returns a new workflow resource.
 func NewWorkflowResource() resource.Resource {
@@ -462,19 +457,13 @@ func (r *workflowResource) validate(ctx context.Context, kind string, payload in
 	return nil
 }
 
-// postWithConflictRetry posts and retries once after a 409.
+// postWithConflictRetry posts and retries on 409 (another workflow
+// configuration task running, or "Failed to acquire lock" when several
+// workflows are created in one apply) — see retryOnConflict.
 func (r *workflowResource) postWithConflictRetry(ctx context.Context, apiPath string, body interface{}, out interface{}) error {
-	status, err := r.client.PostWithStatus(ctx, apiPath, body, out)
-	if status != http.StatusConflict {
-		return err
-	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(workflowConflictRetryDelay):
-	}
-	_, err = r.client.PostWithStatus(ctx, apiPath, body, out)
-	return err
+	return retryOnConflict(ctx, func() (int, error) {
+		return r.client.PostWithStatus(ctx, apiPath, body, out)
+	})
 }
 
 // ---- CRUD ------------------------------------------------------------------------

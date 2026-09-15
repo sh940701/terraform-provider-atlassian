@@ -32,7 +32,7 @@ type workflowMock struct {
 	workflows map[string]map[string]interface{} // entityId → document (with version, ids)
 	nextRule  int
 	// knobs
-	conflictOnce  bool // next create/update answers 409 once
+	conflictLeft  int  // next create/update answers 409 this many times
 	asyncUpdate   bool // update answers with taskId and no workflow
 	asyncCreate   bool // create answers with taskId and no workflow
 	dropStatusIDs bool // bulk-get omits top-level statuses[].id (must fail Read loudly)
@@ -238,9 +238,9 @@ func (m *workflowMock) handler() http.HandlerFunc {
 			writeJSON(w, 200, map[string]interface{}{"errors": errs})
 
 		case r.Method == "POST" && r.URL.Path == "/rest/api/3/workflows/create":
-			if m.conflictOnce {
-				m.conflictOnce = false
-				writeJSON(w, 409, map[string]interface{}{"errorMessages": []string{"another workflow configuration update task is ongoing"}})
+			if m.conflictLeft > 0 {
+				m.conflictLeft--
+				writeJSON(w, 409, map[string]interface{}{"errorMessages": []string{"Failed to acquire lock"}})
 				return
 			}
 			var body map[string]interface{}
@@ -296,9 +296,9 @@ func (m *workflowMock) handler() http.HandlerFunc {
 			writeJSON(w, 200, resp)
 
 		case r.Method == "POST" && r.URL.Path == "/rest/api/3/workflows/update":
-			if m.conflictOnce {
-				m.conflictOnce = false
-				writeJSON(w, 409, map[string]interface{}{"errorMessages": []string{"another workflow configuration update task is ongoing"}})
+			if m.conflictLeft > 0 {
+				m.conflictLeft--
+				writeJSON(w, 409, map[string]interface{}{"errorMessages": []string{"Failed to acquire lock"}})
 				return
 			}
 			var body map[string]interface{}
@@ -633,9 +633,11 @@ func TestAccWorkflowResource_ValidationErrorsSurface(t *testing.T) {
 	})
 }
 
-func TestAccWorkflowResource_RetriesOnceOn409(t *testing.T) {
+// TFC apply (k-care-test, 2026-09-16): six workflows created in one apply made Jira
+// answer 409 "Failed to acquire lock" repeatedly — one retry was not enough.
+func TestAccWorkflowResource_RetriesRepeatedlyOn409(t *testing.T) {
 	mock := newWorkflowMock()
-	mock.conflictOnce = true // first create answers 409
+	mock.conflictLeft = 3 // first three creates answer 409
 	setupWorkflowMock(t, mock)
 
 	resource.Test(t, resource.TestCase{
@@ -648,7 +650,7 @@ func TestAccWorkflowResource_RetriesOnceOn409(t *testing.T) {
 			{
 				PreConfig: func() {
 					mock.mu.Lock()
-					mock.conflictOnce = true // first update answers 409
+					mock.conflictLeft = 3 // first three updates answer 409
 					mock.mu.Unlock()
 				},
 				Config: workflowConfigV2,
