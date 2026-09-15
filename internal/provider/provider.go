@@ -99,6 +99,7 @@ func (p *AtlassianProvider) Resources(_ context.Context) []func() resource.Resou
 	return []func() resource.Resource{
 		jira.NewGroupResource,
 		jira.NewGroupMemberResource,
+		jira.NewWebhookResource,
 		jira.NewProjectResource,
 		jira.NewPermissionSchemeResource,
 		jira.NewPermissionSchemeGrantResource,
@@ -128,6 +129,7 @@ func (p *AtlassianProvider) DataSources(_ context.Context) []func() datasource.D
 	return []func() datasource.DataSource{
 		jira.NewGroupDataSource,
 		jira.NewGroupMembersDataSource,
+		jira.NewWebhookDataSource,
 		jira.NewProjectDataSource,
 		jira.NewPermissionSchemeDataSource,
 		jira.NewIssueTypeDataSource,
