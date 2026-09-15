@@ -44,10 +44,10 @@ type workflowMock struct {
 func newWorkflowMock() *workflowMock {
 	return &workflowMock{
 		statuses: []map[string]interface{}{
-			{"id": "11216", "name": "기안", "statusCategory": map[string]interface{}{"key": "TODO"}},
-			{"id": "11217", "name": "검토 중", "statusCategory": map[string]interface{}{"key": "IN_PROGRESS"}},
-			{"id": "11218", "name": "승인 대기", "statusCategory": map[string]interface{}{"key": "IN_PROGRESS"}},
-			{"id": "10373", "name": "완료", "statusCategory": map[string]interface{}{"key": "DONE"}},
+			{"id": "11216", "name": "기안", "description": "신청자가 기안", "statusCategory": map[string]interface{}{"key": "TODO"}},
+			{"id": "11217", "name": "검토 중", "description": "검토자가 검토", "statusCategory": map[string]interface{}{"key": "IN_PROGRESS"}},
+			{"id": "11218", "name": "승인 대기", "description": "", "statusCategory": map[string]interface{}{"key": "IN_PROGRESS"}},
+			{"id": "10373", "name": "완료", "description": "종결", "statusCategory": map[string]interface{}{"key": "DONE"}},
 		},
 		workflows: map[string]map[string]interface{}{},
 		nextRule:  100,
@@ -96,7 +96,7 @@ func (m *workflowMock) statusDefsFor(wf map[string]interface{}) []map[string]int
 			out = append(out, map[string]interface{}{
 				"id": id, "statusReference": id, "name": s["name"],
 				"statusCategory": s["statusCategory"].(map[string]interface{})["key"],
-				"scope":          map[string]interface{}{"type": "GLOBAL"}, "description": "",
+				"scope":          map[string]interface{}{"type": "GLOBAL"}, "description": s["description"],
 			})
 		}
 	}
@@ -147,12 +147,23 @@ func serverOrdered(wf map[string]interface{}) map[string]interface{} {
 // id+statusReference+name+statusCategory; the first transition is INITIAL
 // without conditions; GLOBAL transitions have no links; a restrict rule
 // carries all seven parameter keys; update items carry statusMappings.
-func checkWorkflowBody(body map[string]interface{}, isUpdate bool) string {
+func checkWorkflowBody(body map[string]interface{}, isUpdate bool, statuses []map[string]interface{}) string {
 	for _, raw := range body["statuses"].([]interface{}) {
 		d := raw.(map[string]interface{})
 		for _, k := range []string{"id", "statusReference", "name", "statusCategory"} {
 			if v, _ := d[k].(string); v == "" {
 				return "top-level status missing " + k
+			}
+		}
+		// Real site (k-care-test, 2026-09-16): Jira upserts the top-level statuses from
+		// this array — a missing description wiped the descriptions of all seven statuses.
+		desc, has := d["description"].(string)
+		if !has {
+			return "top-level status missing description"
+		}
+		for _, s := range statuses {
+			if s["id"] == d["id"] && s["description"] != desc {
+				return fmt.Sprintf("top-level status %s description %q != current %q", d["id"], desc, s["description"])
 			}
 		}
 	}
@@ -245,7 +256,7 @@ func (m *workflowMock) handler() http.HandlerFunc {
 			}
 			var body map[string]interface{}
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			if msg := checkWorkflowBody(body, false); msg != "" {
+			if msg := checkWorkflowBody(body, false, m.statuses); msg != "" {
 				writeJSON(w, 400, map[string]interface{}{"errorMessages": []string{msg}})
 				return
 			}
@@ -303,7 +314,7 @@ func (m *workflowMock) handler() http.HandlerFunc {
 			}
 			var body map[string]interface{}
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			if msg := checkWorkflowBody(body, true); msg != "" {
+			if msg := checkWorkflowBody(body, true, m.statuses); msg != "" {
 				writeJSON(w, 400, map[string]interface{}{"errorMessages": []string{msg}})
 				return
 			}

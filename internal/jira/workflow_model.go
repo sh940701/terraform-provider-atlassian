@@ -197,8 +197,10 @@ func buildCreateRequest(spec workflowSpec, defs map[string]workflowStatusDef) (w
 		if !ok {
 			return workflowCreateRequest{}, fmt.Errorf("status %q not found", id)
 		}
+		// Jira upserts these definitions into the global statuses, so the current
+		// description must travel along or it is wiped (seen on k-care-test).
 		topLevel = append(topLevel, workflowStatusDef{
-			ID: id, StatusReference: refOf(defs, id), Name: d.Name, StatusCategory: d.StatusCategory,
+			ID: id, StatusReference: refOf(defs, id), Name: d.Name, StatusCategory: d.StatusCategory, Description: d.Description,
 		})
 	}
 	doc, err := buildDocument(spec, defs, nil)

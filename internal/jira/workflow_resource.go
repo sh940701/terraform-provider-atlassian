@@ -407,7 +407,8 @@ func (r *workflowResource) statusDefsFor(ctx context.Context, ids []string, refs
 			missing = append(missing, id)
 			continue
 		}
-		defs[id] = workflowStatusDef{ID: id, StatusReference: refs[id], Name: s.Name, StatusCategory: s.statusCategoryKey()}
+		desc := s.Description
+		defs[id] = workflowStatusDef{ID: id, StatusReference: refs[id], Name: s.Name, StatusCategory: s.statusCategoryKey(), Description: &desc}
 	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("statuses not found: %s", strings.Join(missing, ", "))
@@ -603,7 +604,7 @@ func (r *workflowResource) Update(ctx context.Context, req resource.UpdateReques
 	topLevel := make([]workflowStatusDef, 0, len(spec.StatusIDs))
 	for _, sid := range spec.StatusIDs {
 		d := defs[sid]
-		topLevel = append(topLevel, workflowStatusDef{ID: sid, StatusReference: refOf(defs, sid), Name: d.Name, StatusCategory: d.StatusCategory})
+		topLevel = append(topLevel, workflowStatusDef{ID: sid, StatusReference: refOf(defs, sid), Name: d.Name, StatusCategory: d.StatusCategory, Description: d.Description})
 	}
 	body := workflowUpdateRequest{Statuses: topLevel, Workflows: []workflowUpdateItem{item}}
 
