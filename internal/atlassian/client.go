@@ -30,6 +30,10 @@ type Client struct {
 	token      string
 	version    string
 	httpClient *http.Client
+
+	// Long-running task polling (see task.go). Zero means package defaults.
+	taskPollInterval time.Duration
+	taskTimeout      time.Duration
 }
 
 // ClientConfig holds the configuration for creating a new Client.
