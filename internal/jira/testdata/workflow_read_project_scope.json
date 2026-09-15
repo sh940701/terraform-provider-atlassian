@@ -282,7 +282,7 @@
               "ruleKey": "system:change-assignee",
               "parameters": {
                 "type": "to-selected-user",
-                "accountId": "70121:58fadda0-3e3a-4c40-8f00-7c46086793b0"
+                "accountId": "5b10ac8d82e05b22cc7d4ef6"
               },
               "id": "825250339"
             }
