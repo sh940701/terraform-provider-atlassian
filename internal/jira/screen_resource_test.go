@@ -365,8 +365,8 @@ resource "atlassian_jira_screen_tab" "t" {
 			},
 			// Import tab
 			{
-				ResourceName:      "atlassian_jira_screen_tab.t",
-				ImportState:       true,
+				ResourceName: "atlassian_jira_screen_tab.t",
+				ImportState:  true,
 				ImportStateIdFunc: func(s *terraform.State) (string, error) {
 					screenID := s.RootModule().Resources["atlassian_jira_screen.s"].Primary.ID
 					tabID := s.RootModule().Resources["atlassian_jira_screen_tab.t"].Primary.ID

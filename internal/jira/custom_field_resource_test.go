@@ -17,10 +17,10 @@ import (
 )
 
 const (
-	testFieldID         = "customfield_10100"
-	testFieldType       = "com.atlassian.jira.plugin.system.customfieldtypes:textfield"
-	testFieldSearcher   = "com.atlassian.jira.plugin.system.customfieldtypes:textsearcher"
-	testFieldCustomID   = int64(10100)
+	testFieldID       = "customfield_10100"
+	testFieldType     = "com.atlassian.jira.plugin.system.customfieldtypes:textfield"
+	testFieldSearcher = "com.atlassian.jira.plugin.system.customfieldtypes:textsearcher"
+	testFieldCustomID = int64(10100)
 )
 
 type customFieldState struct {

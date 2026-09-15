@@ -231,8 +231,8 @@ func screenExistsByID(ctx context.Context, client *atlassian.Client, id string) 
 		apiPath := fmt.Sprintf("/rest/api/3/screens?maxResults=%d&startAt=%d", maxResults, startAt)
 
 		var page struct {
-			Values  []json.RawMessage `json:"values"`
-			IsLast  bool              `json:"isLast"`
+			Values []json.RawMessage `json:"values"`
+			IsLast bool              `json:"isLast"`
 		}
 
 		statusCode, err := client.GetWithStatus(ctx, apiPath, &page)

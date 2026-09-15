@@ -146,6 +146,22 @@ data "atlassian_jira_group_members" "test" {
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testutil.ProtoV6ProviderFactories,
+		CheckDestroy: func(s *terraform.State) error {
+			for _, rs := range s.RootModule().Resources {
+				if rs.Type != "atlassian_jira_group" {
+					continue
+				}
+				var out map[string]interface{}
+				status, err := client.GetWithStatus(context.Background(), "/rest/api/3/group?groupId="+atlassian.QueryEscape(rs.Primary.Attributes["group_id"]), &out)
+				if err != nil {
+					return err
+				}
+				if status != http.StatusNotFound {
+					return fmt.Errorf("group %s still exists", rs.Primary.Attributes["group_id"])
+				}
+			}
+			return nil
+		},
 		Steps: []resource.TestStep{
 			{
 				Config: config,

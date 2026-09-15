@@ -32,11 +32,13 @@ type workflowMock struct {
 	workflows map[string]map[string]interface{} // entityId → document (with version, ids)
 	nextRule  int
 	// knobs
-	conflictOnce bool // next create/update answers 409 once
-	asyncUpdate  bool // update answers with taskId and no workflow
-	rejectNamed  string
-	updateBodies []map[string]interface{}
-	createBodies []map[string]interface{}
+	conflictOnce  bool // next create/update answers 409 once
+	asyncUpdate   bool // update answers with taskId and no workflow
+	asyncCreate   bool // create answers with taskId and no workflow
+	dropStatusIDs bool // bulk-get omits top-level statuses[].id (must fail Read loudly)
+	rejectNamed   string
+	updateBodies  []map[string]interface{}
+	createBodies  []map[string]interface{}
 }
 
 func newWorkflowMock() *workflowMock {
@@ -109,6 +111,56 @@ func (m *workflowMock) readResponse(wfs []map[string]interface{}) map[string]int
 	return map[string]interface{}{"statuses": statuses, "workflows": wfs}
 }
 
+// checkWorkflowBody mirrors what Jira rejects: top-level statuses need
+// id+statusReference+name+statusCategory; the first transition is INITIAL
+// without conditions; GLOBAL transitions have no links; a restrict rule
+// carries all seven parameter keys; update items carry statusMappings.
+func checkWorkflowBody(body map[string]interface{}, isUpdate bool) string {
+	for _, raw := range body["statuses"].([]interface{}) {
+		d := raw.(map[string]interface{})
+		for _, k := range []string{"id", "statusReference", "name", "statusCategory"} {
+			if v, _ := d[k].(string); v == "" {
+				return "top-level status missing " + k
+			}
+		}
+	}
+	for _, raw := range body["workflows"].([]interface{}) {
+		wf := raw.(map[string]interface{})
+		trs := wf["transitions"].([]interface{})
+		if len(trs) == 0 || trs[0].(map[string]interface{})["type"] != "INITIAL" {
+			return "first transition must be INITIAL"
+		}
+		for i, t := range trs {
+			tr := t.(map[string]interface{})
+			if _, has := tr["conditions"]; has && i == 0 {
+				return "INITIAL has conditions"
+			}
+			if tr["type"] == "GLOBAL" && len(tr["links"].([]interface{})) != 0 {
+				return "GLOBAL transition has links"
+			}
+			if c, ok := tr["conditions"].(map[string]interface{}); ok {
+				for _, r := range c["conditions"].([]interface{}) {
+					rule := r.(map[string]interface{})
+					if rule["ruleKey"] == "system:restrict-issue-transition" && len(rule["parameters"].(map[string]interface{})) != 7 {
+						return "restrict rule must carry 7 parameter keys"
+					}
+				}
+			}
+		}
+		if isUpdate {
+			for _, k := range []string{"id", "version", "statusMappings", "defaultStatusMappings"} {
+				if _, ok := wf[k]; !ok {
+					return "update item missing " + k
+				}
+			}
+			if _, ok := wf["name"]; ok {
+				return "update item must not carry name"
+			}
+		}
+	}
+	return ""
+}
+
 func writeJSON(w http.ResponseWriter, code int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -154,6 +206,10 @@ func (m *workflowMock) handler() http.HandlerFunc {
 			}
 			var body map[string]interface{}
 			_ = json.NewDecoder(r.Body).Decode(&body)
+			if msg := checkWorkflowBody(body, false); msg != "" {
+				writeJSON(w, 400, map[string]interface{}{"errorMessages": []string{msg}})
+				return
+			}
 			m.createBodies = append(m.createBodies, body)
 			wf := body["workflows"].([]interface{})[0].(map[string]interface{})
 			wf["id"] = workflowFixedEntityID
@@ -162,6 +218,10 @@ func (m *workflowMock) handler() http.HandlerFunc {
 			wf["isEditable"] = true
 			m.assignIDs(wf)
 			m.workflows[workflowFixedEntityID] = wf
+			if m.asyncCreate {
+				writeJSON(w, 200, map[string]interface{}{"statuses": []interface{}{}, "workflows": []interface{}{}, "taskId": "task-7"})
+				return
+			}
 			writeJSON(w, 200, m.readResponse([]map[string]interface{}{wf}))
 
 		case r.Method == "POST" && r.URL.Path == "/rest/api/3/workflows":
@@ -187,7 +247,13 @@ func (m *workflowMock) handler() http.HandlerFunc {
 				writeJSON(w, 200, map[string]interface{}{"statuses": []interface{}{}, "workflows": []interface{}{}})
 				return
 			}
-			writeJSON(w, 200, m.readResponse(found))
+			resp := m.readResponse(found)
+			if m.dropStatusIDs {
+				for _, d := range resp["statuses"].([]map[string]interface{}) {
+					delete(d, "id")
+				}
+			}
+			writeJSON(w, 200, resp)
 
 		case r.Method == "POST" && r.URL.Path == "/rest/api/3/workflows/update":
 			if m.conflictOnce {
@@ -197,6 +263,10 @@ func (m *workflowMock) handler() http.HandlerFunc {
 			}
 			var body map[string]interface{}
 			_ = json.NewDecoder(r.Body).Decode(&body)
+			if msg := checkWorkflowBody(body, true); msg != "" {
+				writeJSON(w, 400, map[string]interface{}{"errorMessages": []string{msg}})
+				return
+			}
 			m.updateBodies = append(m.updateBodies, body)
 			item := body["workflows"].([]interface{})[0].(map[string]interface{})
 			id, _ := item["id"].(string)
@@ -521,6 +591,46 @@ func TestAccWorkflowResource_RetriesOnceOn409(t *testing.T) {
 				},
 				Config: workflowConfigV2,
 				Check:  resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "version", "2"),
+			},
+		},
+	})
+}
+
+func TestAccWorkflowResource_AsyncCreateReadsBackByName(t *testing.T) {
+	mock := newWorkflowMock()
+	mock.asyncCreate = true
+	setupWorkflowMock(t, mock)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testutil.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: workflowConfigV1,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "id", workflowFixedEntityID),
+					resource.TestCheckResourceAttr("atlassian_jira_workflow.test", "version", "1"),
+				),
+			},
+		},
+	})
+}
+
+func TestAccWorkflowResource_ReadFailsLoudlyWithoutStatusIDs(t *testing.T) {
+	mock := newWorkflowMock()
+	setupWorkflowMock(t, mock)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testutil.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: workflowConfigV1},
+			{
+				PreConfig: func() {
+					mock.mu.Lock()
+					mock.dropStatusIDs = true
+					mock.mu.Unlock()
+				},
+				RefreshState: true,
+				ExpectError:  regexp.MustCompile(`status definition without id`),
 			},
 		},
 	})

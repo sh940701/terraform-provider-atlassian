@@ -46,10 +46,10 @@ type projectResourceModel struct {
 // ID uses json.Number because POST returns a number while GET returns a string.
 type jiraProjectAPIResponse struct {
 	ID             json.Number `json:"id"`
-	Key            string `json:"key"`
-	Name           string `json:"name"`
-	Description    string `json:"description,omitempty"`
-	ProjectTypeKey string `json:"projectTypeKey"`
+	Key            string      `json:"key"`
+	Name           string      `json:"name"`
+	Description    string      `json:"description,omitempty"`
+	ProjectTypeKey string      `json:"projectTypeKey"`
 	Lead           struct {
 		AccountID string `json:"accountId"`
 	} `json:"lead"`

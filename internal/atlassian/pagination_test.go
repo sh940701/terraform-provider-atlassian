@@ -379,3 +379,42 @@ func TestGetAllPagesMaxPagesExceeded(t *testing.T) {
 		t.Errorf("expected %d requests, got %d", MaxPages, requestCount.Load())
 	}
 }
+
+func TestGetAllPagesWithStatus_FirstPage404(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	c, err := NewClient(ClientConfig{URL: srv.URL, User: "u", Token: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	values, status, err := c.GetAllPagesWithStatus(context.Background(), "/rest/api/3/group/member?groupId=x")
+	if err != nil || status != http.StatusNotFound || values != nil {
+		t.Fatalf("want (nil, 404, nil), got (%v, %d, %v)", values, status, err)
+	}
+	// The plain variant must still surface a 404 as an error.
+	if _, err := c.GetAllPages(context.Background(), "/rest/api/3/group/member?groupId=x"); err == nil {
+		t.Fatal("GetAllPages must error on 404")
+	}
+}
+
+func TestGetAllPagesWithStatus_LaterPageErrorIsError(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"startAt":0,"maxResults":1,"total":2,"isLast":false,"values":[{"a":1}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	c, err := NewClient(ClientConfig{URL: srv.URL, User: "u", Token: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.GetAllPagesWithStatus(context.Background(), "/x"); err == nil {
+		t.Fatal("a 404 after the first page must be an error, not 'not found'")
+	}
+}

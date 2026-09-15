@@ -204,6 +204,12 @@ func (u workflowUpdateItem) MarshalJSON() ([]byte, error) {
 	if err := json.Unmarshal(doc, &m); err != nil {
 		return nil, err
 	}
+	// WorkflowUpdate (swagger) = id, version, description, startPointLayout,
+	// loopedTransitionContainerLayout, statuses, transitions, statusMappings,
+	// defaultStatusMappings — never the read-only document fields.
+	for _, k := range []string{"name", "scope", "isEditable", "created", "updated", "taskId"} {
+		delete(m, k)
+	}
 	dsm := u.DefaultStatusMappings
 	if dsm == nil {
 		dsm = []workflowStatusMigration{}

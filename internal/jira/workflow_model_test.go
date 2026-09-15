@@ -259,3 +259,52 @@ func TestStatusRefIndex_RequiresIDs(t *testing.T) {
 		t.Fatal("expected error when the status index is empty")
 	}
 }
+
+func TestValidateSpec_RejectsGlobalFromAndDuplicates(t *testing.T) {
+	s := sampleSpec()
+	s.Transitions[3].From = []string{"11216"} // GLOBAL with from
+	if err := validateSpec(s); err == nil {
+		t.Fatal("GLOBAL transition with `from` must be rejected")
+	}
+	s = sampleSpec()
+	s.Transitions[1].SeparationOfDuties = append(s.Transitions[1].SeparationOfDuties, workflowSoDSpec{From: "11216", To: "11217"})
+	if err := validateSpec(s); err == nil {
+		t.Fatal("duplicate separation_of_duties pair must be rejected")
+	}
+	s = sampleSpec()
+	s.Transitions[0].RequiredFields = []string{"description", "description"}
+	if err := validateSpec(s); err == nil {
+		t.Fatal("duplicate required field must be rejected")
+	}
+	s = sampleSpec()
+	s.Transitions[0].Name = "Create"
+	if err := validateSpec(s); err == nil {
+		t.Fatal("reserved transition name Create must be rejected")
+	}
+}
+
+func TestUpdateItem_WireOmitsReadOnlyDocumentFields(t *testing.T) {
+	doc, refToID := readDoc(t)
+	spec, _ := specFromDocument(doc, refToID)
+	defs := map[string]workflowStatusDef{}
+	for ref, id := range refToID {
+		defs[id] = workflowStatusDef{ID: id, StatusReference: ref}
+	}
+	item, err := buildUpdateItem(spec, doc, defs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(item)
+	var m map[string]interface{}
+	_ = json.Unmarshal(raw, &m)
+	for _, k := range []string{"name", "scope", "isEditable", "created", "updated", "taskId"} {
+		if _, ok := m[k]; ok {
+			t.Errorf("update item must not carry %q", k)
+		}
+	}
+	for _, k := range []string{"id", "version", "description", "statuses", "transitions", "statusMappings", "defaultStatusMappings"} {
+		if _, ok := m[k]; !ok {
+			t.Errorf("update item must carry %q", k)
+		}
+	}
+}

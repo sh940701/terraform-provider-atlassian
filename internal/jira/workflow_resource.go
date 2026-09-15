@@ -493,11 +493,24 @@ func (r *workflowResource) Create(ctx context.Context, req resource.CreateReques
 		resp.Diagnostics.AddError("Error creating workflow", err.Error())
 		return
 	}
-	if len(result.Workflows) == 0 {
-		resp.Diagnostics.AddError("Error creating workflow", "API returned no workflow")
-		return
+	if result.TaskID != "" {
+		if err := r.client.PollTask(ctx, result.TaskID); err != nil {
+			resp.Diagnostics.AddError("Error creating workflow", err.Error())
+			return
+		}
 	}
-	created := result.Workflows[0]
+	var created jiraWorkflow
+	if len(result.Workflows) > 0 {
+		created = result.Workflows[0]
+	} else {
+		// Asynchronous create: look the new workflow up by name.
+		doc, _, found, err := fetchWorkflow(ctx, r.client, workflowReadRequest{WorkflowNames: []string{spec.Name}})
+		if err != nil || !found || doc.Name != spec.Name {
+			resp.Diagnostics.AddError("Error creating workflow", fmt.Sprintf("API returned no workflow and %q could not be read back: %v", spec.Name, err))
+			return
+		}
+		created = doc
+	}
 
 	// Preserve plan values; take id and version from the server.
 	plan.ID = types.StringValue(created.ID)
@@ -604,13 +617,14 @@ func (r *workflowResource) Update(ctx context.Context, req resource.UpdateReques
 	case len(result.Workflows) > 0 && result.Workflows[0].Version != nil:
 		plan.Version = types.Int64Value(int64(result.Workflows[0].Version.VersionNumber))
 	default:
-		// Asynchronous update: read the new version back.
+		// Asynchronous update: the new version must be read back — guessing
+		// it would desynchronise the optimistic lock.
 		doc, _, found, err := fetchWorkflow(ctx, r.client, workflowReadRequest{WorkflowIDs: []string{id}})
-		if err == nil && found && doc.Version != nil {
-			plan.Version = types.Int64Value(int64(doc.Version.VersionNumber))
-		} else {
-			plan.Version = types.Int64Value(state.Version.ValueInt64() + 1)
+		if err != nil || !found || doc.Version == nil {
+			resp.Diagnostics.AddError("Error updating workflow", fmt.Sprintf("update applied but the new document version could not be read back (found=%v): %v", found, err))
+			return
 		}
+		plan.Version = types.Int64Value(int64(doc.Version.VersionNumber))
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }

@@ -122,10 +122,15 @@ func validateSpec(s workflowSpec) error {
 				return fmt.Errorf("transition %q: `from` status %q is not in statuses", t.Name, f)
 			}
 		}
+		seenPair := map[[2]string]bool{}
 		for _, p := range t.SeparationOfDuties {
 			if !known[p.From] || !known[p.To] {
 				return fmt.Errorf("transition %q: separation_of_duties refers to a status not in statuses (%q → %q)", t.Name, p.From, p.To)
 			}
+			if seenPair[[2]string{p.From, p.To}] {
+				return fmt.Errorf("transition %q: separation_of_duties pair %q → %q listed twice", t.Name, p.From, p.To)
+			}
+			seenPair[[2]string{p.From, p.To}] = true
 		}
 		if t.Assign != nil {
 			if !assignTypes[t.Assign.Type] {
@@ -138,10 +143,15 @@ func validateSpec(s workflowSpec) error {
 				return fmt.Errorf("transition %q: assign.account_id is only valid with type to-selected-user", t.Name)
 			}
 		}
+		seenField := map[string]bool{}
 		for _, f := range t.RequiredFields {
 			if f == "" {
 				return fmt.Errorf("transition %q: required_fields must not contain empty strings", t.Name)
 			}
+			if seenField[f] {
+				return fmt.Errorf("transition %q: required field %q listed twice", t.Name, f)
+			}
+			seenField[f] = true
 		}
 	}
 	return nil
@@ -430,7 +440,7 @@ func mergeValidators(ts workflowTransitionSpec, base []workflowRule) []workflowR
 		}
 		out = append(out, workflowRule{RuleKey: ruleKeyValidateField, Parameters: map[string]string{
 			"ruleType": "fieldRequired", "fieldsRequired": f, "ignoreContext": "true",
-			"errorMessage": fmt.Sprintf("%s is required", f),
+			"errorMessage": fmt.Sprintf("%s 필수", f),
 		}})
 		done[f] = true
 	}

@@ -104,9 +104,13 @@ func testCheckProjectRoleActorRemoved(s *terraform.State) error {
 
 		var result struct {
 			Actors []struct {
-				Type       string                                  `json:"type"`
-				ActorUser  *struct{ AccountID string `json:"accountId"` } `json:"actorUser"`
-				ActorGroup *struct{ Name string `json:"name"` }           `json:"actorGroup"`
+				Type      string `json:"type"`
+				ActorUser *struct {
+					AccountID string `json:"accountId"`
+				} `json:"actorUser"`
+				ActorGroup *struct {
+					Name string `json:"name"`
+				} `json:"actorGroup"`
 			} `json:"actors"`
 		}
 		statusCode, err := client.GetWithStatus(ctx, apiPath, &result)

@@ -110,8 +110,9 @@ func (m *webhookMock) handler() http.HandlerFunc {
 				}
 				cur[k] = v
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(m.view(base, id))
+			// Real PUT response shape is undocumented; answer with no body so the
+			// resource must re-read instead of decoding.
+			w.WriteHeader(http.StatusNoContent)
 
 		case r.Method == "DELETE" && idRe.MatchString(r.URL.Path):
 			id := idRe.FindStringSubmatch(r.URL.Path)[1]

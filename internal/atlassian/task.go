@@ -21,7 +21,7 @@ type taskProgress struct {
 
 // PollTask polls a Jira long-running task (e.g. the taskId returned by
 // POST /rest/api/3/workflows/update) until it reaches a terminal status.
-// COMPLETE returns nil; FAILED / CANCELLED / DEAD return an error carrying
+// COMPLETE returns nil; FAILED / CANCELLED / CANCEL_REQUESTED / DEAD return an error carrying
 // the task message. Poll interval and timeout are overridable per client
 // (unexported — tests shorten them).
 func (c *Client) PollTask(ctx context.Context, taskID string) error {
@@ -45,7 +45,7 @@ func (c *Client) PollTask(ctx context.Context, taskID string) error {
 		switch task.Status {
 		case "COMPLETE":
 			return nil
-		case "FAILED", "CANCELLED", "DEAD":
+		case "FAILED", "CANCELLED", "CANCEL_REQUESTED", "DEAD":
 			return fmt.Errorf("task %s ended with status %s: %s", taskID, task.Status, task.Message)
 		}
 

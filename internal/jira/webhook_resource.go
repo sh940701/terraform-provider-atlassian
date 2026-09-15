@@ -212,6 +212,15 @@ func (r *webhookResource) Read(ctx context.Context, req resource.ReadRequest, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	switch {
+	case doc.IsSigned && state.Secret.ValueString() == "":
+		resp.Diagnostics.AddWarning("Webhook secret unknown",
+			fmt.Sprintf("Jira reports webhook %s as signed but no `secret` is configured (imported, or set outside Terraform). Set `secret` to the value Jira has, or to \"\" to remove it on the next apply.", state.ID.ValueString()))
+	case !doc.IsSigned && state.Secret.ValueString() != "":
+		resp.Diagnostics.AddWarning("Webhook secret removed outside Terraform",
+			fmt.Sprintf("Webhook %s is no longer signed although `secret` is configured; the next apply re-sends it.", state.ID.ValueString()))
+		state.Secret = types.StringValue("") // makes the plan re-send the configured secret
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -235,15 +244,21 @@ func (r *webhookResource) Update(ctx context.Context, req resource.UpdateRequest
 		body.Secret = &s
 	}
 
-	var result webhookAPIDocument
+	// The PUT response body is undocumented (may be empty): do not decode it,
+	// read the webhook back instead.
 	apiPath := "/rest/webhooks/1.0/webhook/" + atlassian.PathEscape(state.ID.ValueString())
-	if err := r.client.Put(ctx, apiPath, body, &result); err != nil {
+	if err := r.client.Put(ctx, apiPath, body, nil); err != nil {
 		resp.Diagnostics.AddError("Error updating webhook", err.Error())
+		return
+	}
+	var doc webhookAPIDocument
+	if _, err := r.client.GetWithStatus(ctx, apiPath, &doc); err != nil {
+		resp.Diagnostics.AddError("Error reading webhook after update", err.Error())
 		return
 	}
 
 	plan.ID = state.ID
-	plan.IsSigned = types.BoolValue(result.IsSigned)
+	plan.IsSigned = types.BoolValue(doc.IsSigned)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 

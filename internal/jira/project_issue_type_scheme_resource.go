@@ -206,4 +206,3 @@ func (r *projectIssueTypeSchemeResource) ImportState(ctx context.Context, req re
 		fmt.Sprintf("No issue type scheme association found for project ID %q", projectID),
 	)
 }
-
