@@ -13,6 +13,7 @@ import (
 // This prevents accidental sweeps against production instances.
 var AllowedSweepHosts = map[string]bool{
 	"lbajsarowicz.atlassian.net": true,
+	// K-CARE developer site — set ATLASSIAN_SWEEP_HOST to allow another host locally.
 }
 
 // SkipIfNoConfluencePermissions skips the test unless ATLASSIAN_CONFLUENCE_PAID=1 is set.
@@ -36,6 +37,9 @@ func SkipIfNoAcc(t *testing.T) {
 // Validates that the target host is in AllowedSweepHosts.
 // Outside CI (GITHUB_ACTIONS != "true"), requires ATLASSIAN_SWEEP_CONFIRM=<hostname>.
 func SweepClient() (*atlassian.Client, error) {
+	if extra := os.Getenv("ATLASSIAN_SWEEP_HOST"); extra != "" {
+		AllowedSweepHosts[extra] = true
+	}
 	atlassianURL := os.Getenv("ATLASSIAN_URL")
 	if atlassianURL == "" {
 		return nil, fmt.Errorf("ATLASSIAN_URL is not set")

@@ -1,3 +1,7 @@
+> **K-CARE fork** of [lbajsarowicz/terraform-provider-atlassian](https://github.com/lbajsarowicz/terraform-provider-atlassian) (GPL-3.0-or-later).
+> Rewrites `atlassian_jira_workflow` on the versioned workflow API (transitions · who may transition · separation of duties · assignee post function · required-field validators, in-place updates)
+> and adds `atlassian_jira_webhook` and `atlassian_jira_group_member`. Published to the HCP Terraform private registry as `bsg-kcare/atlassian`.
+
 # terraform-provider-atlassian
 
 [![Terraform Registry](https://img.shields.io/badge/terraform-registry-blueviolet)](https://registry.terraform.io/providers/lbajsarowicz/atlassian/latest)
