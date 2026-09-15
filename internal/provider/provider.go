@@ -98,6 +98,7 @@ func (p *AtlassianProvider) Configure(ctx context.Context, req provider.Configur
 func (p *AtlassianProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		jira.NewGroupResource,
+		jira.NewGroupMemberResource,
 		jira.NewProjectResource,
 		jira.NewPermissionSchemeResource,
 		jira.NewPermissionSchemeGrantResource,
@@ -126,6 +127,7 @@ func (p *AtlassianProvider) Resources(_ context.Context) []func() resource.Resou
 func (p *AtlassianProvider) DataSources(_ context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		jira.NewGroupDataSource,
+		jira.NewGroupMembersDataSource,
 		jira.NewProjectDataSource,
 		jira.NewPermissionSchemeDataSource,
 		jira.NewIssueTypeDataSource,

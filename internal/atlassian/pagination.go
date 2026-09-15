@@ -27,6 +27,18 @@ const MaxPages = 100
 // The path should be the API path without pagination query parameters.
 // Results are returned as raw JSON messages that the caller can unmarshal.
 func (c *Client) GetAllPages(ctx context.Context, path string) ([]json.RawMessage, error) {
+	values, _, err := c.getAllPages(ctx, path, false)
+	return values, err
+}
+
+// GetAllPagesWithStatus is like GetAllPages but treats a 404 on the first
+// request as (nil, 404, nil) rather than an error, so callers can detect a
+// parent resource (e.g. a group) deleted out-of-band.
+func (c *Client) GetAllPagesWithStatus(ctx context.Context, path string) ([]json.RawMessage, int, error) {
+	return c.getAllPages(ctx, path, true)
+}
+
+func (c *Client) getAllPages(ctx context.Context, path string, tolerate404 bool) ([]json.RawMessage, int, error) {
 	allValues := make([]json.RawMessage, 0)
 	startAt := 0
 	maxResults := 50
@@ -40,21 +52,29 @@ func (c *Client) GetAllPages(ctx context.Context, path string) ([]json.RawMessag
 		paginatedPath := fmt.Sprintf("%s%sstartAt=%d&maxResults=%d", path, separator, startAt, maxResults)
 
 		var page PageResponse
-		if err := c.Get(ctx, paginatedPath, &page); err != nil {
-			return nil, fmt.Errorf("fetching page at startAt=%d: %w", startAt, err)
+		if tolerate404 && startAt == 0 {
+			statusCode, err := c.GetWithStatus(ctx, paginatedPath, &page)
+			if err != nil {
+				return nil, statusCode, fmt.Errorf("fetching page at startAt=%d: %w", startAt, err)
+			}
+			if statusCode == http.StatusNotFound {
+				return nil, http.StatusNotFound, nil
+			}
+		} else if err := c.Get(ctx, paginatedPath, &page); err != nil {
+			return nil, 0, fmt.Errorf("fetching page at startAt=%d: %w", startAt, err)
 		}
 
 		// Guard against APIs that ignore startAt and return the same page:
 		// if the response startAt doesn't match our request, stop paginating
 		// without appending the duplicate data.
 		if startAt > 0 && page.StartAt != startAt {
-			return allValues, nil
+			return allValues, http.StatusOK, nil
 		}
 
 		allValues = append(allValues, page.Values...)
 
 		if page.IsLast || len(page.Values) == 0 {
-			return allValues, nil
+			return allValues, http.StatusOK, nil
 		}
 
 		startAt += len(page.Values)
@@ -62,17 +82,17 @@ func (c *Client) GetAllPages(ctx context.Context, path string) ([]json.RawMessag
 		// Guard against APIs that report total correctly but lie about isLast:
 		// if we've fetched all items according to total, stop.
 		if page.Total > 0 && startAt >= page.Total {
-			return allValues, nil
+			return allValues, http.StatusOK, nil
 		}
 
 		// Guard against APIs that don't set isLast correctly:
 		// if we got fewer values than the page capacity, we've reached the end.
 		if page.MaxResults > 0 && len(page.Values) < page.MaxResults {
-			return allValues, nil
+			return allValues, http.StatusOK, nil
 		}
 	}
 
-	return nil, fmt.Errorf("pagination exceeded %d pages for %s", MaxPages, path)
+	return nil, 0, fmt.Errorf("pagination exceeded %d pages for %s", MaxPages, path)
 }
 
 // CursorPageResponse is the cursor-based pagination response used by Confluence v2 APIs.
