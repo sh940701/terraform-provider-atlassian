@@ -1,5 +1,9 @@
 name: Release
 
+# Tag v* → signed GoReleaser build → GitHub release → HCP Terraform private registry
+# (bsg-kcare/atlassian). Secrets: GPG_PRIVATE_KEY (ASCII-armored, no passphrase),
+# TFC_TOKEN (user or team token with "Manage Private Registry").
+
 on:
   push:
     tags:
@@ -21,21 +25,11 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Load secrets from 1Password
-        uses: 1password/load-secrets-action@v2
-        with:
-          export-env: true
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          GPG_PRIVATE_KEY: op://terraform-provider-atlassian/terraform-atlassian-gpg/terraform-atlassian.pem
-          GPG_PASSPHRASE: op://terraform-provider-atlassian/terraform-atlassian-gpg/password
-
       - name: Import GPG key
         uses: crazy-max/ghaction-import-gpg@v6
         id: import_gpg
         with:
-          gpg_private_key: ${{ env.GPG_PRIVATE_KEY }}
-          passphrase: ${{ env.GPG_PASSPHRASE }}
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
 
       - uses: goreleaser/goreleaser-action@v7
         with:
@@ -44,3 +38,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+
+      - name: Publish to HCP Terraform private registry
+        env:
+          TFC_TOKEN: ${{ secrets.TFC_TOKEN }}
+          TFC_ORG: bsg-kcare
+        run: |
+          gpg --armor --export "${{ steps.import_gpg.outputs.fingerprint }}" > /tmp/pubkey.asc
+          GPG_PUBKEY_FILE=/tmp/pubkey.asc scripts/publish-tfc.sh "$TFC_ORG" atlassian "${GITHUB_REF_NAME#v}" dist
