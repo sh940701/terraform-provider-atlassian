@@ -90,18 +90,24 @@ func newCustomFieldMockServer(state *customFieldState, readCount *atomic.Int32) 
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(state.apiResponse()) //nolint:errcheck
 
-		case r.Method == "GET" && r.URL.Path == "/rest/api/3/field":
+		case r.Method == "GET" && r.URL.Path == "/rest/api/3/field/search":
+			// Real API (k-care-test, 2026-09-16): searcherKey is only returned with expand=searcherKey;
+			// without it the resource read "" and planned to replace every field.
 			if readCount != nil {
 				readCount.Add(1)
 			}
 			id, _, _, _, _ := state.get()
-			if id == "" || deleted.Load() > 0 {
+			if id == "" || deleted.Load() > 0 || r.URL.Query().Get("id") != id {
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode([]interface{}{}) //nolint:errcheck
+				json.NewEncoder(w).Encode(map[string]interface{}{"values": []interface{}{}, "isLast": true}) //nolint:errcheck
 				return
 			}
+			doc := state.apiResponse()
+			if r.URL.Query().Get("expand") != "searcherKey" {
+				delete(doc, "searcherKey")
+			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode([]interface{}{state.apiResponse()}) //nolint:errcheck
+			json.NewEncoder(w).Encode(map[string]interface{}{"values": []interface{}{doc}, "isLast": true}) //nolint:errcheck
 
 		case r.Method == "PUT" && r.URL.Path == "/rest/api/3/field/"+testFieldID:
 			var body struct {
@@ -238,16 +244,15 @@ func TestAccCustomFieldResource_Read_NotFound(t *testing.T) {
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(state.apiResponse()) //nolint:errcheck
 
-		case r.Method == "GET" && r.URL.Path == "/rest/api/3/field":
+		case r.Method == "GET" && r.URL.Path == "/rest/api/3/field/search":
 			readCount.Add(1)
+			w.Header().Set("Content-Type", "application/json")
 			if readCount.Load() <= 1 {
 				// First read after create succeeds
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode([]interface{}{state.apiResponse()}) //nolint:errcheck
+				json.NewEncoder(w).Encode(map[string]interface{}{"values": []interface{}{state.apiResponse()}, "isLast": true}) //nolint:errcheck
 			} else {
-				// Subsequent reads return empty list (deleted out-of-band)
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode([]interface{}{}) //nolint:errcheck
+				// Subsequent reads return an empty page (deleted out-of-band)
+				json.NewEncoder(w).Encode(map[string]interface{}{"values": []interface{}{}, "isLast": true}) //nolint:errcheck
 			}
 
 		case r.Method == "DELETE" && r.URL.Path == "/rest/api/3/field/"+testFieldID:
