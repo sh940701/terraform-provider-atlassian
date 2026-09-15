@@ -420,3 +420,23 @@ func TestPostWithStatusReturnsCodeOnConflict(t *testing.T) {
 		t.Fatalf("error must carry the body, got: %v", err)
 	}
 }
+
+func TestPutWithStatusReturnsCodeOnConflict(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"errorMessages":["another workflow configuration update task is ongoing"]}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(ClientConfig{URL: srv.URL, User: "u", Token: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := c.PutWithStatus(context.Background(), "/rest/api/3/workflows/create", map[string]string{}, nil)
+	if status != http.StatusConflict {
+		t.Fatalf("status: want 409, got %d", status)
+	}
+	if err == nil || !strings.Contains(err.Error(), "another workflow configuration update task is ongoing") {
+		t.Fatalf("error must carry the body, got: %v", err)
+	}
+}

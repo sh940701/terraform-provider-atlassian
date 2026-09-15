@@ -185,7 +185,10 @@ func (r *statusResource) Create(ctx context.Context, req resource.CreateRequest,
 	var result []struct {
 		ID string `json:"id"`
 	}
-	err := r.client.Post(ctx, "/rest/api/3/statuses", body, &result)
+	err := retryOnConflict(ctx, func() (int, error) {
+		result = nil
+		return r.client.PostWithStatus(ctx, "/rest/api/3/statuses", body, &result)
+	})
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating status", err.Error())
 		return
@@ -252,7 +255,9 @@ func (r *statusResource) Update(ctx context.Context, req resource.UpdateRequest,
 		},
 	}
 
-	err := r.client.Put(ctx, "/rest/api/3/statuses", body, nil)
+	err := retryOnConflict(ctx, func() (int, error) {
+		return r.client.PutWithStatus(ctx, "/rest/api/3/statuses", body, nil)
+	})
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating status", err.Error())
 		return
@@ -273,7 +278,12 @@ func (r *statusResource) Delete(ctx context.Context, req resource.DeleteRequest,
 
 	// Delete uses query param ?id=, NOT a path segment.
 	apiPath := fmt.Sprintf("/rest/api/3/statuses?id=%s", atlassian.QueryEscape(state.ID.ValueString()))
-	statusCode, err := r.client.DeleteWithStatus(ctx, apiPath)
+	var statusCode int
+	err := retryOnConflict(ctx, func() (int, error) {
+		var err error
+		statusCode, err = r.client.DeleteWithStatus(ctx, apiPath)
+		return statusCode, err
+	})
 
 	// 404 means the status was already deleted out-of-band; treat as success.
 	// Jira also returns 400 "does not exist" for already-deleted statuses.

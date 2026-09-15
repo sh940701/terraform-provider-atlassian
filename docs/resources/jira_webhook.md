@@ -26,7 +26,7 @@ resource "atlassian_jira_webhook" "collector" {
 
 ### Required
 
-- `events` (List of String) Events that trigger the webhook, e.g. `jira:issue_created`, `jira:issue_updated`, `comment_created`.
+- `events` (Set of String) Events that trigger the webhook, e.g. `jira:issue_created`, `jira:issue_updated`, `comment_created`. Order is not significant (Jira returns its own).
 - `name` (String) The name of the webhook.
 - `url` (String) The HTTPS URL Jira posts events to. Allowed ports: 443, 1880-1890, 4044, 6017, 7990, 8060, 8080, 8085, 8089, 8090, 8443, 8444, 8900, 9900, 9420, 9520.
 

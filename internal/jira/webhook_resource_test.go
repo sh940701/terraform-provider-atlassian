@@ -11,7 +11,10 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 	"github.com/lbajsarowicz/terraform-provider-atlassian/internal/testutil"
 )
 
@@ -33,12 +36,19 @@ func newWebhookMock() *webhookMock {
 func (m *webhookMock) view(baseURL, id string) map[string]interface{} {
 	h := m.hooks[id]
 	secret, _ := h["secret"].(string)
+	// The real API returns events in its own order (observed reversed on
+	// k-care-test); the resource must not see that as drift.
+	events, _ := h["events"].([]interface{})
+	reversed := make([]interface{}, 0, len(events))
+	for i := len(events) - 1; i >= 0; i-- {
+		reversed = append(reversed, events[i])
+	}
 	return map[string]interface{}{
 		"name":        h["name"],
 		"description": h["description"],
 		"url":         h["url"],
 		"excludeBody": h["excludeBody"],
-		"events":      h["events"],
+		"events":      reversed,
 		"filters":     h["filters"],
 		"enabled":     h["enabled"],
 		"self":        baseURL + "/rest/webhooks/1.0/webhook/" + id,
@@ -190,8 +200,14 @@ func TestAccWebhookResource_basic(t *testing.T) {
 				),
 			},
 			{
-				// Rename only: PUT must NOT carry `secret` (omitted = keep).
+				// Rename only: PUT must NOT carry `secret` (omitted = keep), and
+				// is_signed stays known in the plan (derived from the planned secret).
 				Config: strings.Replace(fmt.Sprintf(webhookConfig, "s3cr3t"), "K-CARE collector", "K-CARE collector v2", 1),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectKnownValue("atlassian_jira_webhook.test", tfjsonpath.New("is_signed"), knownvalue.Bool(true)),
+					},
+				},
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("atlassian_jira_webhook.test", "name", "K-CARE collector v2"),
 					resource.TestCheckResourceAttr("atlassian_jira_webhook.test", "is_signed", "true"),

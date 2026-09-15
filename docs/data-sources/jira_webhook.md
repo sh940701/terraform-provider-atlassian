@@ -28,7 +28,7 @@ data "atlassian_jira_webhook" "collector" {
 
 - `description` (String) A description of the webhook.
 - `enabled` (Boolean) Whether the webhook is enabled.
-- `events` (List of String) Events that trigger the webhook.
+- `events` (Set of String) Events that trigger the webhook.
 - `exclude_body` (Boolean) Whether the issue body is excluded from deliveries.
 - `is_signed` (Boolean) Whether a secret is configured.
 - `jql` (String) JQL filter for issue-related events.

@@ -272,27 +272,34 @@ func (c *Client) PostWithStatus(ctx context.Context, path string, body interface
 
 // Put performs a PUT request with a JSON body and decodes the response into v.
 func (c *Client) Put(ctx context.Context, path string, body interface{}, v interface{}) error {
+	_, err := c.PutWithStatus(ctx, path, body, v)
+	return err
+}
+
+// PutWithStatus is like Put but also returns the HTTP status code (see
+// PostWithStatus). On a non-2xx status the returned error carries the body.
+func (c *Client) PutWithStatus(ctx context.Context, path string, body interface{}, v interface{}) (int, error) {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("marshaling request body: %w", err)
+		return 0, fmt.Errorf("marshaling request body: %w", err)
 	}
 
 	resp, err := c.Do(ctx, "PUT", path, jsonBody)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("PUT %s: unexpected status %d: %s", path, resp.StatusCode, string(bodyBytes))
+		return resp.StatusCode, fmt.Errorf("PUT %s: unexpected status %d: %s", path, resp.StatusCode, string(bodyBytes))
 	}
 
 	if v != nil {
-		return json.NewDecoder(resp.Body).Decode(v)
+		return resp.StatusCode, json.NewDecoder(resp.Body).Decode(v)
 	}
 
-	return nil
+	return resp.StatusCode, nil
 }
 
 // Patch performs a PATCH request with a JSON body and decodes the response into v.

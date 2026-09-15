@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -25,6 +25,7 @@ import (
 var (
 	_ resource.Resource                = &webhookResource{}
 	_ resource.ResourceWithImportState = &webhookResource{}
+	_ resource.ResourceWithModifyPlan  = &webhookResource{}
 )
 
 // NewWebhookResource returns a new webhook resource.
@@ -41,7 +42,7 @@ type webhookResourceModel struct {
 	Name        types.String `tfsdk:"name"`
 	Description types.String `tfsdk:"description"`
 	URL         types.String `tfsdk:"url"`
-	Events      types.List   `tfsdk:"events"`
+	Events      types.Set    `tfsdk:"events"`
 	JQL         types.String `tfsdk:"jql"`
 	ExcludeBody types.Bool   `tfsdk:"exclude_body"`
 	Enabled     types.Bool   `tfsdk:"enabled"`
@@ -99,11 +100,11 @@ func (r *webhookResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Required:    true,
 				Validators:  []validator.String{webhookURLValidator{}},
 			},
-			"events": schema.ListAttribute{
-				Description: "Events that trigger the webhook, e.g. `jira:issue_created`, `jira:issue_updated`, `comment_created`.",
+			"events": schema.SetAttribute{
+				Description: "Events that trigger the webhook, e.g. `jira:issue_created`, `jira:issue_updated`, `comment_created`. Order is not significant (Jira returns its own).",
 				Required:    true,
 				ElementType: types.StringType,
-				Validators:  []validator.List{listvalidator.SizeAtLeast(1)},
+				Validators:  []validator.Set{setvalidator.SizeAtLeast(1)},
 			},
 			"jql": schema.StringAttribute{
 				Description: "JQL filter for issue-related events (the `issue-related-events-section` filter). Empty means all issues.",
@@ -153,6 +154,20 @@ func (r *webhookResource) Configure(_ context.Context, req resource.ConfigureReq
 	}
 
 	r.client = client
+}
+
+// ModifyPlan keeps `is_signed` known during updates: Jira reports it as
+// "a secret is set", which follows directly from the planned `secret`.
+func (r *webhookResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return // destroy
+	}
+	var secret types.String
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("secret"), &secret)...)
+	if resp.Diagnostics.HasError() || secret.IsUnknown() {
+		return
+	}
+	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("is_signed"), types.BoolValue(secret.ValueString() != ""))...)
 }
 
 func (r *webhookResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -316,7 +331,7 @@ func webhookModelFromDocument(ctx context.Context, m *webhookResourceModel, doc 
 	if m.Secret.IsNull() || m.Secret.IsUnknown() {
 		m.Secret = types.StringValue("")
 	}
-	events, diags := types.ListValueFrom(ctx, types.StringType, doc.Events)
+	events, diags := types.SetValueFrom(ctx, types.StringType, doc.Events)
 	m.Events = events
 	return diags
 }

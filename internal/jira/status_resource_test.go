@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -386,4 +388,60 @@ data "atlassian_jira_status" "test" {
 			},
 		},
 	})
+}
+
+// Real site (k-care-test, 2026-09-16): creating several statuses in one apply
+// (Terraform parallelism) makes Jira answer 409 {"errorMessages":["Failed to
+// acquire lock"]}. Every status write must retry on that.
+func TestAccStatusResource_RetriesOnLockConflict(t *testing.T) {
+	state := &statusState{}
+	base := newStatusMockServer(state, nil)
+	defer base.Close()
+	baseURL, _ := url.Parse(base.URL)
+	proxy := httputil.NewSingleHostReverseProxy(baseURL)
+
+	var mu sync.Mutex
+	conflicted := map[string]bool{}
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rest/api/3/statuses" {
+			mu.Lock()
+			first := !conflicted[r.Method]
+			conflicted[r.Method] = true
+			mu.Unlock()
+			if first {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"errorMessages":["Failed to acquire lock"],"errors":{}}`))
+				return
+			}
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	defer front.Close()
+
+	t.Setenv("ATLASSIAN_URL", front.URL)
+	t.Setenv("ATLASSIAN_USER", "test@test.com")
+	t.Setenv("ATLASSIAN_TOKEN", "test-token")
+
+	config := func(desc string) string {
+		return fmt.Sprintf(`resource "atlassian_jira_status" "test" {
+  name            = "tf-test-lock"
+  description     = %q
+  status_category = "TODO"
+}`, desc)
+	}
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testutil.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config("first"), Check: resource.TestCheckResourceAttr("atlassian_jira_status.test", "id", "10001")},
+			{Config: config("second"), Check: resource.TestCheckResourceAttr("atlassian_jira_status.test", "description", "second")},
+		},
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	for _, m := range []string{"POST", "PUT", "DELETE"} {
+		if !conflicted[m] {
+			t.Errorf("%s never reached the mock", m)
+		}
+	}
 }

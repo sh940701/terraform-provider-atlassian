@@ -275,6 +275,23 @@ func specFromModel(ctx context.Context, m workflowResourceModel) (workflowSpec, 
 	return spec, diags
 }
 
+// transitionNames lists the transition names held by a model list (state or
+// plan) in order; nil when the list is null or unknown.
+func transitionNames(ctx context.Context, l types.List) []string {
+	if l.IsNull() || l.IsUnknown() {
+		return nil
+	}
+	var models []workflowTransitionModel
+	if l.ElementsAs(ctx, &models, false).HasError() {
+		return nil
+	}
+	names := make([]string, 0, len(models))
+	for _, m := range models {
+		names = append(names, m.Name.ValueString())
+	}
+	return names
+}
+
 func stringListValue(ctx context.Context, v []string) (types.List, diag.Diagnostics) {
 	if v == nil {
 		v = []string{}
@@ -357,6 +374,7 @@ func modelFromDocument(ctx context.Context, m *workflowResourceModel, doc jiraWo
 		diags.AddError("Error reading workflow", err.Error())
 		return diags
 	}
+	spec.Transitions = orderTransitionsLike(spec.Transitions, transitionNames(ctx, m.Transitions))
 	m.ID = types.StringValue(doc.ID)
 	m.Name = types.StringValue(doc.Name)
 	m.Description = types.StringValue(doc.Description)
@@ -402,10 +420,15 @@ func (r *workflowResource) statusDefsFor(ctx context.Context, ids []string, refs
 	return defs, nil
 }
 
-// fetchWorkflow bulk-gets one workflow. found=false on an empty result.
+// fetchWorkflow bulk-gets one workflow. found=false on an empty result or a
+// 404 (the API answers 404 for an unknown id or name).
 func fetchWorkflow(ctx context.Context, client *atlassian.Client, req workflowReadRequest) (jiraWorkflow, map[string]string, bool, error) {
 	var resp workflowReadResponse
-	if err := client.Post(ctx, "/rest/api/3/workflows", req, &resp); err != nil {
+	status, err := client.PostWithStatus(ctx, "/rest/api/3/workflows", req, &resp)
+	if status == http.StatusNotFound {
+		return jiraWorkflow{}, nil, false, nil
+	}
+	if err != nil {
 		return jiraWorkflow{}, nil, false, err
 	}
 	if len(resp.Workflows) == 0 {

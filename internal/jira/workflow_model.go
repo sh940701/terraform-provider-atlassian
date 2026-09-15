@@ -2,6 +2,7 @@ package jira
 
 import (
 	"fmt"
+	"strconv"
 
 	"strings"
 )
@@ -283,7 +284,47 @@ func buildDocument(spec workflowSpec, defs map[string]workflowStatusDef, current
 		}
 		doc.Transitions = append(doc.Transitions, mergeTransition(ts, base, defs))
 	}
+	assignTransitionIDs(doc.Transitions)
 	return doc, nil
+}
+
+// assignTransitionIDs gives every transition without an id a fresh one. The
+// create and update APIs require `transitions[].id` (real site: 400 "Missing
+// required field 'payload.workflows.[0].transitions.[0].id'") and do not
+// assign them. Existing ids are kept; new ones follow the Jira UI convention
+// of the INITIAL transition being "1" and the rest counting up by 10 above
+// the largest numeric id already present.
+func assignTransitionIDs(transitions []workflowTransition) {
+	next := 1
+	used := map[string]bool{}
+	for _, t := range transitions {
+		if t.ID == "" {
+			continue
+		}
+		used[t.ID] = true
+		if n, err := strconv.Atoi(t.ID); err == nil && n >= next {
+			next = n + 10
+		}
+	}
+	for i := range transitions {
+		if transitions[i].ID != "" {
+			continue
+		}
+		if transitions[i].Type == transitionTypeInitial && !used["1"] {
+			transitions[i].ID = "1"
+			used["1"] = true
+			if next == 1 {
+				next = 11
+			}
+			continue
+		}
+		for used[strconv.Itoa(next)] {
+			next += 10
+		}
+		transitions[i].ID = strconv.Itoa(next)
+		used[transitions[i].ID] = true
+		next += 10
+	}
 }
 
 // mergeTransition writes the managed parts of ts over base (a server
@@ -526,6 +567,34 @@ func splitCSV(s string) []string {
 	for _, p := range parts {
 		if p = strings.TrimSpace(p); p != "" {
 			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// orderTransitionsLike re-orders transitions to follow prior (a list of
+// transition names, e.g. from state or config): the API returns them in its
+// own order (GLOBAL first, then INITIAL, then the rest), which would show up
+// as a spurious diff. Names not in prior keep their server order at the end.
+func orderTransitionsLike(transitions []workflowTransitionSpec, prior []string) []workflowTransitionSpec {
+	if len(transitions) == 0 {
+		return nil
+	}
+	byName := make(map[string]int, len(transitions))
+	for i, t := range transitions {
+		byName[t.Name] = i
+	}
+	out := make([]workflowTransitionSpec, 0, len(transitions))
+	taken := make([]bool, len(transitions))
+	for _, name := range prior {
+		if i, ok := byName[name]; ok && !taken[i] {
+			out = append(out, transitions[i])
+			taken[i] = true
+		}
+	}
+	for i, t := range transitions {
+		if !taken[i] {
+			out = append(out, t)
 		}
 	}
 	return out

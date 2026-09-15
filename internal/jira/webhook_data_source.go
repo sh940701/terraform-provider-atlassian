@@ -27,7 +27,7 @@ type webhookDataSourceModel struct {
 	Name        types.String `tfsdk:"name"`
 	Description types.String `tfsdk:"description"`
 	URL         types.String `tfsdk:"url"`
-	Events      types.List   `tfsdk:"events"`
+	Events      types.Set    `tfsdk:"events"`
 	JQL         types.String `tfsdk:"jql"`
 	ExcludeBody types.Bool   `tfsdk:"exclude_body"`
 	Enabled     types.Bool   `tfsdk:"enabled"`
@@ -46,7 +46,7 @@ func (d *webhookDataSource) Schema(_ context.Context, _ datasource.SchemaRequest
 			"name":         schema.StringAttribute{Description: "The name of the webhook.", Computed: true},
 			"description":  schema.StringAttribute{Description: "A description of the webhook.", Computed: true},
 			"url":          schema.StringAttribute{Description: "The URL Jira posts events to.", Computed: true},
-			"events":       schema.ListAttribute{Description: "Events that trigger the webhook.", Computed: true, ElementType: types.StringType},
+			"events":       schema.SetAttribute{Description: "Events that trigger the webhook.", Computed: true, ElementType: types.StringType},
 			"jql":          schema.StringAttribute{Description: "JQL filter for issue-related events.", Computed: true},
 			"exclude_body": schema.BoolAttribute{Description: "Whether the issue body is excluded from deliveries.", Computed: true},
 			"enabled":      schema.BoolAttribute{Description: "Whether the webhook is enabled.", Computed: true},
@@ -98,7 +98,7 @@ func (d *webhookDataSource) Read(ctx context.Context, req datasource.ReadRequest
 	config.ExcludeBody = types.BoolValue(doc.ExcludeBody)
 	config.Enabled = types.BoolValue(doc.Enabled == nil || *doc.Enabled)
 	config.IsSigned = types.BoolValue(doc.IsSigned)
-	events, diags := types.ListValueFrom(ctx, types.StringType, doc.Events)
+	events, diags := types.SetValueFrom(ctx, types.StringType, doc.Events)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return

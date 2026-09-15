@@ -308,3 +308,71 @@ func TestUpdateItem_WireOmitsReadOnlyDocumentFields(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildDocument_AssignsTransitionIDs(t *testing.T) {
+	// Real site (k-care-test, 2026-09-16): POST /workflows/create/validation
+	// answers 400 "Missing required field 'payload.workflows.[0].transitions.[0].id'"
+	// when a transition has no id — the server does not assign them.
+	req, err := buildCreateRequest(sampleSpec(), sampleStatusDefs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for i, tr := range req.Workflows[0].Transitions {
+		if tr.ID == "" {
+			t.Fatalf("transition %d (%s) has no id", i, tr.Name)
+		}
+		if seen[tr.ID] {
+			t.Fatalf("duplicate transition id %q", tr.ID)
+		}
+		seen[tr.ID] = true
+	}
+	if req.Workflows[0].Transitions[0].ID != "1" {
+		t.Fatalf("INITIAL id = %q, want \"1\"", req.Workflows[0].Transitions[0].ID)
+	}
+
+	// Update: existing ids are kept, a new transition gets a fresh unique id.
+	doc, refToID := readDoc(t)
+	spec, err := specFromDocument(doc, refToID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defs := map[string]workflowStatusDef{}
+	for ref, id := range refToID {
+		defs[id] = workflowStatusDef{ID: id, StatusReference: ref, Name: "n", StatusCategory: "TODO"}
+	}
+	spec.Transitions = append(spec.Transitions, workflowTransitionSpec{Name: "새 전이", Type: "GLOBAL", To: spec.StatusIDs[0]})
+	item, err := buildUpdateItem(spec, doc, defs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing := map[string]string{}
+	for _, tr := range doc.Transitions {
+		existing[tr.Name] = tr.ID
+	}
+	ids := map[string]bool{}
+	for _, tr := range item.Transitions {
+		if tr.ID == "" || ids[tr.ID] {
+			t.Fatalf("transition %q id %q empty or duplicate", tr.Name, tr.ID)
+		}
+		ids[tr.ID] = true
+		if want, ok := existing[tr.Name]; ok && want != tr.ID {
+			t.Fatalf("transition %q id changed %q -> %q", tr.Name, want, tr.ID)
+		}
+	}
+}
+
+func TestOrderTransitionsLike_FollowsPriorOrderThenServerOrder(t *testing.T) {
+	// The API returns transitions in its own order (GLOBAL, INITIAL, DIRECTED…),
+	// so Read must re-order them like the state/config to avoid spurious diffs.
+	got := orderTransitionsLike([]workflowTransitionSpec{{Name: "C"}, {Name: "A"}, {Name: "B"}, {Name: "D"}}, []string{"A", "B", "X"})
+	want := []string{"A", "B", "C", "D"}
+	for i, ts := range got {
+		if ts.Name != want[i] {
+			t.Fatalf("order = %v, want %v", got, want)
+		}
+	}
+	if len(orderTransitionsLike(nil, []string{"A"})) != 0 {
+		t.Fatal("nil in, nil out")
+	}
+}

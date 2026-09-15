@@ -10,5 +10,6 @@ import (
 func init() {
 	if testing.Testing() {
 		workflowConflictRetryDelay = 10 * time.Millisecond
+		conflictRetryDelay = 10 * time.Millisecond
 	}
 }

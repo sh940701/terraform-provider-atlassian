@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -134,9 +135,25 @@ resource "atlassian_jira_workflow" "test" {
 				Check:  resource.TestCheckResourceAttrSet("atlassian_jira_workflow.test", "version"),
 			},
 			{
-				ResourceName:      "atlassian_jira_workflow.test",
-				ImportState:       true,
-				ImportStateVerify: true,
+				// Import has no prior state to order by → server order (GLOBAL first).
+				ResourceName:            "atlassian_jira_workflow.test",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"transitions"},
+				ImportStateCheck: func(states []*terraform.InstanceState) error {
+					if len(states) != 1 {
+						return fmt.Errorf("expected 1 imported state, got %d", len(states))
+					}
+					a := states[0].Attributes
+					names := map[string]bool{}
+					for i := 0; i < 3; i++ {
+						names[a[fmt.Sprintf("transitions.%d.name", i)]] = true
+					}
+					if a["transitions.#"] != "3" || !names["Request review"] || !names["Approve"] || !names["Reopen"] {
+						return fmt.Errorf("imported transitions = %v", names)
+					}
+					return nil
+				},
 			},
 		},
 	})
@@ -190,7 +207,11 @@ func testCheckWorkflowDestroyed(s *terraform.State) error {
 			} `json:"workflows"`
 		}
 		body := map[string][]string{"workflowIds": {rs.Primary.ID}}
-		if err := client.Post(ctx, "/rest/api/3/workflows", body, &out); err != nil {
+		status, err := client.PostWithStatus(ctx, "/rest/api/3/workflows", body, &out)
+		if status == http.StatusNotFound {
+			continue // bulk get answers 404 for a deleted workflow
+		}
+		if err != nil {
 			return fmt.Errorf("error checking workflow %s destruction: %w", rs.Primary.ID, err)
 		}
 		if len(out.Workflows) > 0 {

@@ -105,10 +105,42 @@ func (m *workflowMock) statusDefsFor(wf map[string]interface{}) []map[string]int
 
 func (m *workflowMock) readResponse(wfs []map[string]interface{}) map[string]interface{} {
 	statuses := []map[string]interface{}{}
+	out := make([]map[string]interface{}, 0, len(wfs))
 	for _, wf := range wfs {
 		statuses = append(statuses, m.statusDefsFor(wf)...)
+		out = append(out, serverOrdered(wf))
 	}
-	return map[string]interface{}{"statuses": statuses, "workflows": wfs}
+	return map[string]interface{}{"statuses": statuses, "workflows": out}
+}
+
+// serverOrdered returns a shallow copy of wf whose transitions follow the
+// order the real API answers with (observed on k-care-test): GLOBAL first,
+// then INITIAL, then the rest — never the order they were sent in.
+func serverOrdered(wf map[string]interface{}) map[string]interface{} {
+	cp := make(map[string]interface{}, len(wf))
+	for k, v := range wf {
+		cp[k] = v
+	}
+	trs, _ := wf["transitions"].([]interface{})
+	rank := func(t interface{}) int {
+		switch t.(map[string]interface{})["type"] {
+		case "GLOBAL":
+			return 0
+		case "INITIAL":
+			return 1
+		}
+		return 2
+	}
+	ordered := make([]interface{}, 0, len(trs))
+	for r := 0; r <= 2; r++ {
+		for _, t := range trs {
+			if rank(t) == r {
+				ordered = append(ordered, t)
+			}
+		}
+	}
+	cp["transitions"] = ordered
+	return cp
 }
 
 // checkWorkflowBody mirrors what Jira rejects: top-level statuses need
@@ -130,8 +162,15 @@ func checkWorkflowBody(body map[string]interface{}, isUpdate bool) string {
 		if len(trs) == 0 || trs[0].(map[string]interface{})["type"] != "INITIAL" {
 			return "first transition must be INITIAL"
 		}
+		seenIDs := map[string]bool{}
 		for i, t := range trs {
 			tr := t.(map[string]interface{})
+			// Real API: "Missing required field 'payload.workflows.[0].transitions.[0].id'".
+			if id, _ := tr["id"].(string); id == "" || seenIDs[id] {
+				return fmt.Sprintf("Missing required field 'payload.workflows.[0].transitions.[%d].id'", i)
+			} else {
+				seenIDs[id] = true
+			}
 			if _, has := tr["conditions"]; has && i == 0 {
 				return "INITIAL has conditions"
 			}
@@ -244,7 +283,8 @@ func (m *workflowMock) handler() http.HandlerFunc {
 				}
 			}
 			if found == nil {
-				writeJSON(w, 200, map[string]interface{}{"statuses": []interface{}{}, "workflows": []interface{}{}})
+				// Real API (k-care-test, 2026-09-16): unknown id or name → 404, not an empty list.
+				writeJSON(w, 404, map[string]interface{}{"errorMessages": []string{"Not found"}, "errors": map[string]interface{}{}})
 				return
 			}
 			resp := m.readResponse(found)
@@ -516,9 +556,31 @@ func TestAccWorkflowResource_CreateUpdateImport(t *testing.T) {
 				),
 			},
 			{
-				ResourceName:      "atlassian_jira_workflow.test",
-				ImportState:       true,
-				ImportStateVerify: true,
+				// Import has no prior state to order by, so transitions arrive in
+				// server order; verify membership instead of positions.
+				ResourceName:            "atlassian_jira_workflow.test",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"transitions"},
+				ImportStateCheck: func(states []*terraform.InstanceState) error {
+					if len(states) != 1 {
+						return fmt.Errorf("expected 1 imported state, got %d", len(states))
+					}
+					a := states[0].Attributes
+					if a["transitions.#"] != "4" {
+						return fmt.Errorf("imported transitions.# = %q", a["transitions.#"])
+					}
+					names := map[string]bool{}
+					for i := 0; i < 4; i++ {
+						names[a[fmt.Sprintf("transitions.%d.name", i)]] = true
+					}
+					for _, want := range []string{"검토 요청", "검토 완료", "반려", "재개"} {
+						if !names[want] {
+							return fmt.Errorf("imported transitions missing %q: %v", want, names)
+						}
+					}
+					return nil
+				},
 			},
 		},
 	})
