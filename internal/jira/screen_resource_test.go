@@ -678,3 +678,52 @@ func extractScreenTabFieldID(p string) (string, string, string) {
 	parts := strings.Split(suffix, "/")
 	return parts[0], parts[2], parts[4]
 }
+
+// Sandbox rehearsal (2026-09-17): replacing a custom field re-adds it to six screen tabs;
+// Jira answered 400 «필드 id … 이미 스크린에 있음» for two of them and Create failed on
+// every apply after that. An association that already exists is the desired state — adopt it.
+func TestAccScreenTabFieldResource_AdoptsWhenAlreadyOnTab(t *testing.T) {
+	var posts atomic.Int32
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "POST" && isFieldsListPath(r.URL.Path):
+			posts.Add(1)
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"errorMessages": []string{}, "errors": map[string]string{"fieldId": "필드 id summary 이미 스크린에 있음"}}) //nolint:errcheck
+		case r.Method == "GET" && isFieldsListPath(r.URL.Path):
+			json.NewEncoder(w).Encode([]map[string]interface{}{fieldJSON("summary", "Summary")}) //nolint:errcheck
+		case r.Method == "DELETE" && isFieldPath(r.URL.Path):
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer mockServer.Close()
+	t.Setenv("ATLASSIAN_URL", mockServer.URL)
+	t.Setenv("ATLASSIAN_USER", "test@test.com")
+	t.Setenv("ATLASSIAN_TOKEN", "test-token")
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testutil.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+resource "atlassian_jira_screen_tab_field" "f" {
+  screen_id = "10036"
+  tab_id    = "10047"
+  field_id  = "summary"
+}`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("atlassian_jira_screen_tab_field.f", "field_id", "summary"),
+					func(_ *terraform.State) error {
+						if posts.Load() != 1 {
+							return fmt.Errorf("expected exactly one POST attempt, got %d", posts.Load())
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}

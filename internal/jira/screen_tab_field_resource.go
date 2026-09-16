@@ -113,14 +113,35 @@ func (r *screenTabFieldResource) Create(ctx context.Context, req resource.Create
 	)
 
 	var result screenTabFieldAPIResponse
-	err := r.client.Post(ctx, apiPath, body, &result)
+	status, err := r.client.PostWithStatus(ctx, apiPath, body, &result)
 	if err != nil {
+		// Jira answers 400 when the field is already on the tab (e.g. a previous apply
+		// added it but failed before recording it). That is the desired state — adopt it
+		// instead of failing on every apply. Anything else stays an error.
+		if status == http.StatusBadRequest && r.fieldOnTab(ctx, apiPath, plan.FieldID.ValueString()) {
+			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+			return
+		}
 		resp.Diagnostics.AddError("Error adding field to screen tab", err.Error())
 		return
 	}
 
 	// All attributes are preserved from the plan (user intent).
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// fieldOnTab reports whether fieldID is already among the tab's fields.
+func (r *screenTabFieldResource) fieldOnTab(ctx context.Context, listPath, fieldID string) bool {
+	var fields []screenTabFieldAPIResponse
+	if err := r.client.Get(ctx, listPath, &fields); err != nil {
+		return false
+	}
+	for _, f := range fields {
+		if f.ID == fieldID {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *screenTabFieldResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
