@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -30,17 +31,32 @@ type permissionSchemeResource struct {
 }
 
 type permissionSchemeResourceModel struct {
-	ID          types.String `tfsdk:"id"`
-	Name        types.String `tfsdk:"name"`
-	Description types.String `tfsdk:"description"`
+	ID                types.String `tfsdk:"id"`
+	Name              types.String `tfsdk:"name"`
+	Description       types.String `tfsdk:"description"`
+	KeepDefaultGrants types.Bool   `tfsdk:"keep_default_grants"`
 }
 
 // permissionSchemeAPIResponse represents the Jira permission scheme API response shape.
 type permissionSchemeAPIResponse struct {
-	ID          int    `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
+	ID          int                     `json:"id"`
+	Name        string                  `json:"name"`
+	Description string                  `json:"description,omitempty"`
+	Permissions []permissionSchemeGrant `json:"permissions,omitempty"`
 }
+
+// permissionSchemeGrant is one grant as returned with expand=permissions.
+type permissionSchemeGrant struct {
+	ID     int `json:"id"`
+	Holder struct {
+		Type      string `json:"type"`
+		Parameter string `json:"parameter"`
+	} `json:"holder"`
+}
+
+// addonsProjectRole is the project role Jira requires for Connect apps; its
+// seeded grants are the only ones kept when a new scheme is emptied.
+const addonsProjectRole = "atlassian-addons-project-access"
 
 // permissionSchemeCreateRequest represents the POST/PUT request body.
 type permissionSchemeCreateRequest struct {
@@ -72,6 +88,12 @@ func (r *permissionSchemeResource) Schema(_ context.Context, _ resource.SchemaRe
 				Optional:    true,
 				Computed:    true,
 				Default:     stringdefault.StaticString(""),
+			},
+			"keep_default_grants": schema.BoolAttribute{
+				Description: "Jira seeds every new permission scheme with its default grants (dozens, including DELETE_* for the administrators and guest roles). By default the provider removes them right after creation so the scheme holds only the grants declared as `atlassian_jira_permission_scheme_grant` resources — except the `atlassian-addons-project-access` role grants Jira requires for apps. Set true to keep Jira's defaults.",
+				Optional:    true,
+				Computed:    true,
+				Default:     booldefault.StaticBool(false),
 			},
 		},
 	}
@@ -117,7 +139,45 @@ func (r *permissionSchemeResource) Create(ctx context.Context, req resource.Crea
 	plan.Name = types.StringValue(result.Name)
 	plan.Description = types.StringValue(result.Description)
 
+	if !plan.KeepDefaultGrants.ValueBool() {
+		if err := r.pruneSeededGrants(ctx, plan.ID.ValueString()); err != nil {
+			resp.Diagnostics.AddError("Error removing Jira's default grants from the new permission scheme", err.Error())
+			return
+		}
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// pruneSeededGrants deletes the grants Jira seeded into a freshly created
+// scheme, keeping only those of the atlassian-addons-project-access role.
+func (r *permissionSchemeResource) pruneSeededGrants(ctx context.Context, schemeID string) error {
+	var roles []struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := r.client.Get(ctx, "/rest/api/3/role", &roles); err != nil {
+		return fmt.Errorf("listing project roles: %w", err)
+	}
+	addons := ""
+	for _, role := range roles {
+		if role.Name == addonsProjectRole {
+			addons = fmt.Sprint(role.ID)
+		}
+	}
+	var scheme permissionSchemeAPIResponse
+	if err := r.client.Get(ctx, "/rest/api/3/permissionscheme/"+atlassian.PathEscape(schemeID)+"?expand=permissions", &scheme); err != nil {
+		return fmt.Errorf("reading seeded grants: %w", err)
+	}
+	for _, g := range scheme.Permissions {
+		if g.Holder.Type == "projectRole" && g.Holder.Parameter == addons {
+			continue
+		}
+		if err := r.client.Delete(ctx, fmt.Sprintf("/rest/api/3/permissionscheme/%s/permission/%d", atlassian.PathEscape(schemeID), g.ID)); err != nil {
+			return fmt.Errorf("deleting seeded grant %d: %w", g.ID, err)
+		}
+	}
+	return nil
 }
 
 func (r *permissionSchemeResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {

@@ -28,6 +28,7 @@ resource "atlassian_jira_permission_scheme" "example" {
 ### Optional
 
 - `description` (String) The description of the permission scheme.
+- `keep_default_grants` (Boolean) Jira seeds every new permission scheme with its default grants (dozens, including DELETE_* for the administrators and guest roles). By default the provider removes them right after creation so the scheme holds only the grants declared as `atlassian_jira_permission_scheme_grant` resources — except the `atlassian-addons-project-access` role grants Jira requires for apps. Set true to keep Jira's defaults.
 
 ### Read-Only
 

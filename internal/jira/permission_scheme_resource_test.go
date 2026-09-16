@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -999,6 +1000,82 @@ func TestAccPermissionSchemeGrantResource_projectRole(t *testing.T) {
 					resource.TestCheckResourceAttr("atlassian_jira_permission_scheme_grant.test", "holder_parameter", "10002"),
 					resource.TestCheckResourceAttr("atlassian_jira_permission_scheme_grant.test", "permission", "EDIT_ISSUES"),
 				),
+			},
+		},
+	})
+}
+
+// Real site (bsgglobal, 2026-09-17): POST /permissionscheme seeds the new scheme with Jira's
+// default grants (62 on the company site — administrators/guest roles incl. DELETE_*), even
+// with "permissions": []. A scheme managed as code must start empty, except the
+// atlassian-addons-project-access grants Jira requires for apps.
+func TestAccPermissionSchemeResource_PrunesSeededGrantsOnCreate(t *testing.T) {
+	var mu sync.Mutex
+	deleted := []string{}
+	seeded := []map[string]interface{}{
+		{"id": 901, "permission": "DELETE_ISSUES", "holder": map[string]interface{}{"type": "projectRole", "parameter": "10738", "value": "10738"}},
+		{"id": 902, "permission": "BROWSE_PROJECTS", "holder": map[string]interface{}{"type": "projectRole", "parameter": "10738", "value": "10738"}},
+		{"id": 903, "permission": "BROWSE_PROJECTS", "holder": map[string]interface{}{"type": "projectRole", "parameter": "10003", "value": "10003"}},
+		{"id": 904, "permission": "ADMINISTER_PROJECTS", "holder": map[string]interface{}{"type": "projectRole", "parameter": "10003", "value": "10003"}},
+	}
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/rest/api/3/permissionscheme":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(newPermissionSchemeMock(10100, "seeded", "")) //nolint:errcheck
+		case r.Method == "GET" && r.URL.Path == "/rest/api/3/permissionscheme/10100":
+			mu.Lock()
+			left := []map[string]interface{}{}
+			for _, g := range seeded {
+				gone := false
+				for _, d := range deleted {
+					if d == fmt.Sprint(g["id"]) {
+						gone = true
+					}
+				}
+				if !gone {
+					left = append(left, g)
+				}
+			}
+			mu.Unlock()
+			m := newPermissionSchemeMock(10100, "seeded", "")
+			m["permissions"] = left
+			json.NewEncoder(w).Encode(m) //nolint:errcheck
+		case r.Method == "GET" && r.URL.Path == "/rest/api/3/role":
+			json.NewEncoder(w).Encode([]map[string]interface{}{{"id": 10003, "name": "atlassian-addons-project-access"}, {"id": 10738, "name": "jira-guest-member"}}) //nolint:errcheck
+		case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/rest/api/3/permissionscheme/10100/permission/"):
+			mu.Lock()
+			deleted = append(deleted, strings.TrimPrefix(r.URL.Path, "/rest/api/3/permissionscheme/10100/permission/"))
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == "DELETE" && r.URL.Path == "/rest/api/3/permissionscheme/10100":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer mockServer.Close()
+	t.Setenv("ATLASSIAN_URL", mockServer.URL)
+	t.Setenv("ATLASSIAN_USER", "test@test.com")
+	t.Setenv("ATLASSIAN_TOKEN", "test-token")
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testutil.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `resource "atlassian_jira_permission_scheme" "test" {
+  name = "seeded"
+}`,
+				Check: func(_ *terraform.State) error {
+					mu.Lock()
+					defer mu.Unlock()
+					sort.Strings(deleted)
+					if strings.Join(deleted, ",") != "901,902" {
+						return fmt.Errorf("expected seeded guest-role grants 901,902 deleted (addon role kept), got %v", deleted)
+					}
+					return nil
+				},
 			},
 		},
 	})
