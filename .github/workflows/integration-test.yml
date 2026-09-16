@@ -1,8 +1,8 @@
 name: Integration Tests
 
 on:
-  push:
-    branches: [main]
+  # Manual only — runs write to the sandbox Jira site and need the ATLASSIAN_* repository
+  # configuration; a push must not turn red because that configuration is absent.
   workflow_dispatch: {}
 
 permissions:

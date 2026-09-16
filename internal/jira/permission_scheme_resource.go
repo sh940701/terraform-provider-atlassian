@@ -204,6 +204,10 @@ func (r *permissionSchemeResource) Read(ctx context.Context, req resource.ReadRe
 	state.Name = types.StringValue(result.Name)
 	state.Description = types.StringValue(result.Description)
 
+	// Imported or pre-0.2.7 state has no keep_default_grants; the schema default applies.
+	if state.KeepDefaultGrants.IsNull() || state.KeepDefaultGrants.IsUnknown() {
+		state.KeepDefaultGrants = types.BoolValue(false)
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 

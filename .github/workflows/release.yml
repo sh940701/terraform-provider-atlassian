@@ -5,9 +5,10 @@ name: Release
 # TFC_TOKEN (user or team token with "Manage Private Registry").
 
 on:
-  push:
-    tags:
-      - "v*"
+  # Manual only: releases are built and published from a maintainer machine
+  # (goreleaser + scripts/publish-tfc.sh). Switch back to a tag trigger once the
+  # repository configuration GPG_PRIVATE_KEY and TFC_TOKEN exists.
+  workflow_dispatch: {}
 
 permissions:
   contents: write

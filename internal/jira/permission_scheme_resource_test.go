@@ -34,6 +34,10 @@ func TestAccPermissionSchemeResource_basic(t *testing.T) {
 
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == "GET" && r.URL.Path == "/rest/api/3/role":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]map[string]interface{}{{"id": 10003, "name": "atlassian-addons-project-access"}}) //nolint:errcheck
+
 		case r.Method == "POST" && r.URL.Path == "/rest/api/3/permissionscheme":
 			var body map[string]string
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -104,6 +108,10 @@ func TestAccPermissionSchemeResource_update(t *testing.T) {
 
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == "GET" && r.URL.Path == "/rest/api/3/role":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]map[string]interface{}{{"id": 10003, "name": "atlassian-addons-project-access"}}) //nolint:errcheck
+
 		case r.Method == "POST" && r.URL.Path == "/rest/api/3/permissionscheme":
 			var body map[string]string
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -187,10 +195,20 @@ func TestAccPermissionSchemeResource_Read_NotFound(t *testing.T) {
 
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == "GET" && r.URL.Path == "/rest/api/3/role":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]map[string]interface{}{{"id": 10003, "name": "atlassian-addons-project-access"}}) //nolint:errcheck
+
 		case r.Method == "POST" && r.URL.Path == "/rest/api/3/permissionscheme":
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(newPermissionSchemeMock(10300, schemeName, ""))
+
+		// The prune step right after create reads the scheme with expand=permissions;
+		// that read must not count towards the "deleted out-of-band" simulation below.
+		case r.Method == "GET" && r.URL.Path == "/rest/api/3/permissionscheme/10300" && r.URL.Query().Get("expand") == "permissions":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(newPermissionSchemeMock(10300, schemeName, "")) //nolint:errcheck
 
 		case r.Method == "GET" && r.URL.Path == "/rest/api/3/permissionscheme/10300":
 			count := readCount.Add(1)
@@ -239,6 +257,10 @@ func TestAccPermissionSchemeResource_Import(t *testing.T) {
 
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == "GET" && r.URL.Path == "/rest/api/3/role":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]map[string]interface{}{{"id": 10003, "name": "atlassian-addons-project-access"}}) //nolint:errcheck
+
 		case r.Method == "POST" && r.URL.Path == "/rest/api/3/permissionscheme":
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
