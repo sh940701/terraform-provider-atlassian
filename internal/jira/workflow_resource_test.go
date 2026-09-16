@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
@@ -33,6 +34,8 @@ type workflowMock struct {
 	nextRule  int
 	// knobs
 	conflictLeft  int  // next create/update answers 409 this many times
+	busyLock      bool // emulate Jira's single config lock: 409 while another create/update is in flight
+	inFlight      int32
 	asyncUpdate   bool // update answers with taskId and no workflow
 	asyncCreate   bool // create answers with taskId and no workflow
 	dropStatusIDs bool // bulk-get omits top-level statuses[].id (must fail Read loudly)
@@ -249,6 +252,17 @@ func (m *workflowMock) handler() http.HandlerFunc {
 			writeJSON(w, 200, map[string]interface{}{"errors": errs})
 
 		case r.Method == "POST" && r.URL.Path == "/rest/api/3/workflows/create":
+			if m.busyLock {
+				if m.inFlight > 0 {
+					writeJSON(w, 409, map[string]interface{}{"errorMessages": []string{"Failed to acquire lock"}})
+					return
+				}
+				m.inFlight++
+				m.mu.Unlock()
+				time.Sleep(150 * time.Millisecond) // Jira takes ~30s per workflow write; retries are much shorter
+				m.mu.Lock()
+				m.inFlight--
+			}
 			if m.conflictLeft > 0 {
 				m.conflictLeft--
 				writeJSON(w, 409, map[string]interface{}{"errorMessages": []string{"Failed to acquire lock"}})
@@ -262,12 +276,18 @@ func (m *workflowMock) handler() http.HandlerFunc {
 			}
 			m.createBodies = append(m.createBodies, body)
 			wf := body["workflows"].([]interface{})[0].(map[string]interface{})
-			wf["id"] = workflowFixedEntityID
+			// One fixed id keeps the single-workflow tests deterministic; further
+			// workflows in the same mock get their own ids (Jira issues a UUID each).
+			id := workflowFixedEntityID
+			if _, taken := m.workflows[id]; taken {
+				id = fmt.Sprintf("%s-%d", workflowFixedEntityID[:8], len(m.workflows))
+			}
+			wf["id"] = id
 			wf["version"] = map[string]interface{}{"id": "ver-1", "versionNumber": float64(1)}
 			wf["scope"] = map[string]interface{}{"type": "GLOBAL"}
 			wf["isEditable"] = true
 			m.assignIDs(wf)
-			m.workflows[workflowFixedEntityID] = wf
+			m.workflows[id] = wf
 			if m.asyncCreate {
 				writeJSON(w, 200, map[string]interface{}{"statuses": []interface{}{}, "workflows": []interface{}{}, "taskId": "task-7"})
 				return
@@ -307,6 +327,17 @@ func (m *workflowMock) handler() http.HandlerFunc {
 			writeJSON(w, 200, resp)
 
 		case r.Method == "POST" && r.URL.Path == "/rest/api/3/workflows/update":
+			if m.busyLock {
+				if m.inFlight > 0 {
+					writeJSON(w, 409, map[string]interface{}{"errorMessages": []string{"Failed to acquire lock"}})
+					return
+				}
+				m.inFlight++
+				m.mu.Unlock()
+				time.Sleep(150 * time.Millisecond) // Jira takes ~30s per workflow write; retries are much shorter
+				m.mu.Lock()
+				m.inFlight--
+			}
 			if m.conflictLeft > 0 {
 				m.conflictLeft--
 				writeJSON(w, 409, map[string]interface{}{"errorMessages": []string{"Failed to acquire lock"}})
@@ -707,6 +738,34 @@ func TestAccWorkflowResource_ReadFailsLoudlyWithoutStatusIDs(t *testing.T) {
 				RefreshState: true,
 				ExpectError:  regexp.MustCompile(`status definition without id`),
 			},
+		},
+	})
+}
+
+// TFC apply on the sandbox (2026-09-17): six workflow updates in one apply, each ~30s on
+// Jira's side, exhausted the 409 retries of the ones queued behind the lock. Writes to the
+// workflow configuration must be serialised inside the provider, not just retried.
+func TestAccWorkflowResource_SerialisesWritesUnderJiraLock(t *testing.T) {
+	mock := newWorkflowMock()
+	mock.busyLock = true
+	setupWorkflowMock(t, mock)
+
+	three := ""
+	for i, n := range []string{"a", "b", "c"} {
+		three += fmt.Sprintf(`
+resource "atlassian_jira_workflow" "%s" {
+  name        = "K-CARE 병렬 %d"
+  description = "v1"
+  statuses    = [{ status_id = "11216" }, { status_id = "10373" }]
+  transitions = [{ name = "완료", from = ["11216"], to = "10373" }]
+}
+`, n, i)
+	}
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testutil.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: three, Check: resource.TestCheckResourceAttr("atlassian_jira_workflow.c", "version", "1")},
+			{Config: strings.ReplaceAll(three, `"v1"`, `"v2"`), Check: resource.TestCheckResourceAttr("atlassian_jira_workflow.c", "description", "v2")},
 		},
 	})
 }

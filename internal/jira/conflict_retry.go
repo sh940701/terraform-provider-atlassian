@@ -3,8 +3,25 @@ package jira
 import (
 	"context"
 	"net/http"
+	"sync"
 	"time"
 )
+
+// configWriteMu serialises writes that contend for Jira's single workflow-
+// configuration lock (workflow create/update, status create/update/delete).
+// Terraform runs resources in parallel; Jira answers 409 "Failed to acquire
+// lock" to every write that overlaps another, and a workflow write takes ~30s,
+// so retrying alone cannot keep up (sandbox apply, 2026-09-17). All such
+// writes inside one provider process take this lock first; retryOnConflict
+// remains for contention from other clients.
+var configWriteMu sync.Mutex
+
+// withConfigLock runs fn while holding configWriteMu.
+func withConfigLock(fn func() error) error {
+	configWriteMu.Lock()
+	defer configWriteMu.Unlock()
+	return fn()
+}
 
 // conflictRetryDelay is the base wait between retries of a write that Jira
 // refused with 409 (e.g. POST /rest/api/3/statuses: "Failed to acquire lock"

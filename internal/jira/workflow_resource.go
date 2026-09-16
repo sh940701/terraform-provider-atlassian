@@ -462,8 +462,10 @@ func (r *workflowResource) validate(ctx context.Context, kind string, payload in
 // configuration task running, or "Failed to acquire lock" when several
 // workflows are created in one apply) — see retryOnConflict.
 func (r *workflowResource) postWithConflictRetry(ctx context.Context, apiPath string, body interface{}, out interface{}) error {
-	return retryOnConflict(ctx, func() (int, error) {
-		return r.client.PostWithStatus(ctx, apiPath, body, out)
+	return withConfigLock(func() error {
+		return retryOnConflict(ctx, func() (int, error) {
+			return r.client.PostWithStatus(ctx, apiPath, body, out)
+		})
 	})
 }
 
