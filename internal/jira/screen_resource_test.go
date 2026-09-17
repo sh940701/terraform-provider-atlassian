@@ -279,14 +279,40 @@ func TestAccScreenTabResource_basic(t *testing.T) {
 		case r.Method == "DELETE" && isScreenPath(r.URL.Path) && !isTabPath(r.URL.Path):
 			w.WriteHeader(http.StatusNoContent)
 
-		// ---- Create tab
+		// ---- Move tab: POST /screens/{sid}/tabs/{tid}/move/{pos}
+		case r.Method == "POST" && isTabMovePath(r.URL.Path):
+			screenID, tabID := extractScreenAndTabID(r.URL.Path)
+			parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/rest/api/3/screens/"), "/")
+			var pos int
+			fmt.Sscanf(parts[4], "%d", &pos) //nolint:errcheck
+			mu.Lock()
+			var moved map[string]interface{}
+			rest := []map[string]interface{}{}
+			for _, tab := range tabs[screenID] {
+				if fmt.Sprintf("%v", tab["id"]) == tabID {
+					moved = tab
+				} else {
+					rest = append(rest, tab)
+				}
+			}
+			if pos > len(rest) {
+				pos = len(rest)
+			}
+			tabs[screenID] = append(append(append([]map[string]interface{}{}, rest[:pos]...), moved), rest[pos:]...)
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+
+		// ---- Create tab (Jira gives every new screen a default tab first — the mock does the same)
 		case r.Method == "POST" && isTabsListPath(r.URL.Path):
 			screenID := extractScreenID(r.URL.Path)
 			var body map[string]string
 			json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+			mu.Lock()
+			if len(tabs[screenID]) == 0 {
+				tabs[screenID] = append(tabs[screenID], tabJSON(nextTabID.Add(1), "일반"))
+			}
 			id := nextTabID.Add(1)
 			tab := tabJSON(id, body["name"])
-			mu.Lock()
 			tabs[screenID] = append(tabs[screenID], tab)
 			mu.Unlock()
 			w.WriteHeader(http.StatusOK)
@@ -361,7 +387,54 @@ resource "atlassian_jira_screen_tab" "t" {
 					resource.TestCheckResourceAttrSet("atlassian_jira_screen_tab.t", "id"),
 					resource.TestCheckResourceAttrSet("atlassian_jira_screen_tab.t", "screen_id"),
 					resource.TestCheckResourceAttr("atlassian_jira_screen_tab.t", "name", "My Tab"),
+					resource.TestCheckResourceAttr("atlassian_jira_screen_tab.t", "position", "1"), // after Jira's default tab
 				),
+			},
+			// position = 0 → moved ahead of the default tab (in place, no replace)
+			{
+				Config: `
+resource "atlassian_jira_screen" "s" {
+  name = "Tab Test Screen"
+}
+resource "atlassian_jira_screen_tab" "t" {
+  screen_id = atlassian_jira_screen.s.id
+  name      = "My Tab"
+  position  = 0
+}`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("atlassian_jira_screen_tab.t", "position", "0"),
+					func(s *terraform.State) error {
+						screenID := s.RootModule().Resources["atlassian_jira_screen.s"].Primary.ID
+						mu.Lock()
+						defer mu.Unlock()
+						if got := fmt.Sprintf("%v", tabs[screenID][0]["name"]); got != "My Tab" {
+							return fmt.Errorf("first tab = %s, want My Tab", got)
+						}
+						return nil
+					},
+				),
+			},
+			// someone drags the tab back → plan repairs it
+			{
+				PreConfig: func() {
+					mu.Lock()
+					for sid, ts := range tabs {
+						if len(ts) == 2 {
+							tabs[sid] = []map[string]interface{}{ts[1], ts[0]}
+						}
+					}
+					mu.Unlock()
+				},
+				Config: `
+resource "atlassian_jira_screen" "s" {
+  name = "Tab Test Screen"
+}
+resource "atlassian_jira_screen_tab" "t" {
+  screen_id = atlassian_jira_screen.s.id
+  name      = "My Tab"
+  position  = 0
+}`,
+				Check: resource.TestCheckResourceAttr("atlassian_jira_screen_tab.t", "position", "0"),
 			},
 			// Import tab
 			{
@@ -422,14 +495,40 @@ func TestAccScreenTabFieldResource_basic(t *testing.T) {
 		case r.Method == "DELETE" && isScreenPath(r.URL.Path) && !isTabPath(r.URL.Path):
 			w.WriteHeader(http.StatusNoContent)
 
-		// ---- Create tab
+		// ---- Move tab: POST /screens/{sid}/tabs/{tid}/move/{pos}
+		case r.Method == "POST" && isTabMovePath(r.URL.Path):
+			screenID, tabID := extractScreenAndTabID(r.URL.Path)
+			parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/rest/api/3/screens/"), "/")
+			var pos int
+			fmt.Sscanf(parts[4], "%d", &pos) //nolint:errcheck
+			mu.Lock()
+			var moved map[string]interface{}
+			rest := []map[string]interface{}{}
+			for _, tab := range tabs[screenID] {
+				if fmt.Sprintf("%v", tab["id"]) == tabID {
+					moved = tab
+				} else {
+					rest = append(rest, tab)
+				}
+			}
+			if pos > len(rest) {
+				pos = len(rest)
+			}
+			tabs[screenID] = append(append(append([]map[string]interface{}{}, rest[:pos]...), moved), rest[pos:]...)
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+
+		// ---- Create tab (Jira gives every new screen a default tab first — the mock does the same)
 		case r.Method == "POST" && isTabsListPath(r.URL.Path):
 			screenID := extractScreenID(r.URL.Path)
 			var body map[string]string
 			json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+			mu.Lock()
+			if len(tabs[screenID]) == 0 {
+				tabs[screenID] = append(tabs[screenID], tabJSON(nextTabID.Add(1), "일반"))
+			}
 			id := nextTabID.Add(1)
 			tab := tabJSON(id, body["name"])
-			mu.Lock()
 			tabs[screenID] = append(tabs[screenID], tab)
 			mu.Unlock()
 			w.WriteHeader(http.StatusOK)
@@ -640,6 +739,13 @@ func isTabPath(p string) bool {
 	suffix := strings.TrimPrefix(p, "/rest/api/3/screens/")
 	parts := strings.Split(suffix, "/")
 	return len(parts) == 3 && parts[1] == "tabs" && parts[2] != ""
+}
+
+// isTabMovePath matches /rest/api/3/screens/{screenId}/tabs/{tabId}/move/{pos}
+func isTabMovePath(p string) bool {
+	suffix := strings.TrimPrefix(p, "/rest/api/3/screens/")
+	parts := strings.Split(suffix, "/")
+	return len(parts) == 5 && parts[1] == "tabs" && parts[3] == "move"
 }
 
 // isFieldsListPath matches /rest/api/3/screens/{screenId}/tabs/{tabId}/fields

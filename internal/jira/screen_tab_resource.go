@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -33,6 +34,7 @@ type screenTabResourceModel struct {
 	ID       types.String `tfsdk:"id"`
 	ScreenID types.String `tfsdk:"screen_id"`
 	Name     types.String `tfsdk:"name"`
+	Position types.Int64  `tfsdk:"position"`
 }
 
 // screenTabAPIResponse represents the Jira screen tab API response shape.
@@ -71,6 +73,16 @@ func (r *screenTabResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 			"name": schema.StringAttribute{
 				Description: "The name of the screen tab.",
 				Required:    true,
+			},
+			"position": schema.Int64Attribute{
+				Description: "Zero-based position of the tab among the screen's tabs. Jira's new issue view shows fields from " +
+					"all tabs in tab order, so `position = 0` puts this tab's fields first — ahead of the default tab Jira " +
+					"creates with every screen. Omit to leave the tab wherever Jira put it.",
+				Optional: true,
+				Computed: true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
 			},
 		},
 	}
@@ -116,7 +128,50 @@ func (r *screenTabResource) Create(ctx context.Context, req resource.CreateReque
 	plan.ID = types.StringValue(fmt.Sprintf("%d", result.ID))
 	// ScreenID and Name are preserved from the plan (user intent).
 
+	if err := r.place(ctx, &plan); err != nil {
+		resp.Diagnostics.AddError("Error positioning screen tab", err.Error())
+		return
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// place moves the tab to plan.Position when one is set, then records the tab's actual position.
+// Jira exposes no "insert at" on create, so position is always a second call: POST …/tabs/{id}/move/{pos}.
+func (r *screenTabResource) place(ctx context.Context, plan *screenTabResourceModel) error {
+	screenID, tabID := plan.ScreenID.ValueString(), plan.ID.ValueString()
+	if !plan.Position.IsNull() && !plan.Position.IsUnknown() {
+		movePath := fmt.Sprintf("/rest/api/3/screens/%s/tabs/%s/move/%d", atlassian.PathEscape(screenID), atlassian.PathEscape(tabID), plan.Position.ValueInt64())
+		if _, err := r.client.PostWithStatus(ctx, movePath, nil, nil); err != nil {
+			return fmt.Errorf("moving tab %s to position %d: %w", tabID, plan.Position.ValueInt64(), err)
+		}
+	}
+	pos, found, err := r.positionOf(ctx, screenID, tabID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("tab %s not found on screen %s after write", tabID, screenID)
+	}
+	plan.Position = types.Int64Value(pos)
+	return nil
+}
+
+// positionOf returns the tab's index in the screen's tab list; found=false when the screen or tab is gone.
+func (r *screenTabResource) positionOf(ctx context.Context, screenID, tabID string) (int64, bool, error) {
+	var tabs []screenTabAPIResponse
+	status, err := r.client.GetWithStatus(ctx, fmt.Sprintf("/rest/api/3/screens/%s/tabs", atlassian.PathEscape(screenID)), &tabs)
+	if err != nil {
+		return 0, false, err
+	}
+	if status == http.StatusNotFound {
+		return 0, false, nil
+	}
+	for i, tab := range tabs {
+		if fmt.Sprintf("%d", tab.ID) == tabID {
+			return int64(i), true, nil
+		}
+	}
+	return 0, false, nil
 }
 
 func (r *screenTabResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -141,10 +196,11 @@ func (r *screenTabResource) Read(ctx context.Context, req resource.ReadRequest, 
 	}
 
 	tabID := state.ID.ValueString()
-	for _, tab := range tabs {
+	for i, tab := range tabs {
 		if fmt.Sprintf("%d", tab.ID) == tabID {
 			state.ID = types.StringValue(fmt.Sprintf("%d", tab.ID))
 			state.Name = types.StringValue(tab.Name)
+			state.Position = types.Int64Value(int64(i))
 			resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 			return
 		}
@@ -167,24 +223,31 @@ func (r *screenTabResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	body := screenTabWriteRequest{
-		Name: plan.Name.ValueString(),
-	}
+	if plan.Name.ValueString() != state.Name.ValueString() {
+		body := screenTabWriteRequest{
+			Name: plan.Name.ValueString(),
+		}
 
-	apiPath := fmt.Sprintf("/rest/api/3/screens/%s/tabs/%s",
-		atlassian.PathEscape(state.ScreenID.ValueString()),
-		atlassian.PathEscape(state.ID.ValueString()),
-	)
+		apiPath := fmt.Sprintf("/rest/api/3/screens/%s/tabs/%s",
+			atlassian.PathEscape(state.ScreenID.ValueString()),
+			atlassian.PathEscape(state.ID.ValueString()),
+		)
 
-	var result screenTabAPIResponse
-	err := r.client.Put(ctx, apiPath, body, &result)
-	if err != nil {
-		resp.Diagnostics.AddError("Error updating screen tab", err.Error())
-		return
+		var result screenTabAPIResponse
+		err := r.client.Put(ctx, apiPath, body, &result)
+		if err != nil {
+			resp.Diagnostics.AddError("Error updating screen tab", err.Error())
+			return
+		}
 	}
 
 	// ID and ScreenID are carried forward from state (unchanged on update).
 	// Name is preserved from the plan (user intent).
+	plan.ID = state.ID
+	if err := r.place(ctx, &plan); err != nil {
+		resp.Diagnostics.AddError("Error positioning screen tab", err.Error())
+		return
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
