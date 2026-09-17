@@ -117,6 +117,7 @@ func (p *AtlassianProvider) Resources(_ context.Context) []func() resource.Resou
 		jira.NewScreenResource,
 		jira.NewScreenTabResource,
 		jira.NewScreenTabFieldResource,
+		jira.NewScreenTabFieldOrderResource,
 		jira.NewScreenSchemeResource,
 		jira.NewIssueTypeScreenSchemeResource,
 		jira.NewProjectIssueTypeScreenSchemeResource,
