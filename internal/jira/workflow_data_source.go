@@ -32,10 +32,11 @@ func (d *workflowDataSource) Schema(_ context.Context, _ datasource.SchemaReques
 	resp.Schema = schema.Schema{
 		Description: "Use this data source to read a company-managed Jira Cloud workflow by name, including its transitions and transition rules.",
 		Attributes: map[string]schema.Attribute{
-			"name":        schema.StringAttribute{Description: "The name of the workflow to look up.", Required: true},
-			"id":          schema.StringAttribute{Description: "The entity ID (UUID) of the workflow.", Computed: true},
-			"description": schema.StringAttribute{Description: "The description of the workflow.", Computed: true},
-			"version":     schema.Int64Attribute{Description: "The document version number.", Computed: true},
+			"name":                   schema.StringAttribute{Description: "The name of the workflow to look up.", Required: true},
+			"id":                     schema.StringAttribute{Description: "The entity ID (UUID) of the workflow.", Computed: true},
+			"description":            schema.StringAttribute{Description: "The description of the workflow.", Computed: true},
+			"version":                schema.Int64Attribute{Description: "The document version number.", Computed: true},
+			"required_field_message": schema.StringAttribute{Description: "Not read back — only meaningful on the resource.", Computed: true},
 			"statuses": schema.ListNestedAttribute{
 				Description: "Statuses used by the workflow, in layout order.",
 				Computed:    true,

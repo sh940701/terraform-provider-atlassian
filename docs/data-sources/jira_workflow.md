@@ -32,6 +32,7 @@ output "review_transition_groups" {
 
 - `description` (String) The description of the workflow.
 - `id` (String) The entity ID (UUID) of the workflow.
+- `required_field_message` (String) Not read back — only meaningful on the resource.
 - `statuses` (Attributes List) Statuses used by the workflow, in layout order. (see [below for nested schema](#nestedatt--statuses))
 - `transitions` (Attributes List) Transitions (the initial transition is not listed). (see [below for nested schema](#nestedatt--transitions))
 - `version` (Number) The document version number.

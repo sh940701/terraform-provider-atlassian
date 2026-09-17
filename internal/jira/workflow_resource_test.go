@@ -227,6 +227,9 @@ func (m *workflowMock) handler() http.HandlerFunc {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		switch {
+		case r.Method == "GET" && r.URL.Path == "/rest/api/3/field":
+			writeJSON(w, 200, []map[string]string{{"id": "description", "name": "Description"}, {"id": "customfield_10761", "name": "변경 내용"}})
+
 		case r.Method == "GET" && r.URL.Path == "/rest/api/3/statuses/search":
 			writeJSON(w, 200, map[string]interface{}{"startAt": 0, "maxResults": 50, "total": len(m.statuses), "isLast": true, "values": m.statuses})
 

@@ -82,6 +82,9 @@ func TestBuildCreateRequest_ShapesDocumentLikeValidatedPayload(t *testing.T) {
 	if got := tr.Validators[0]; got.RuleKey != "system:validate-field-value" || got.Parameters["fieldsRequired"] != "description" || got.Parameters["ruleType"] != "fieldRequired" {
 		t.Fatalf("required field validator: %+v", got)
 	}
+	if got := tr.Validators[0].Parameters["errorMessage"]; got != "description is required" { // no names, no template → default with the id
+		t.Fatalf("default required-field message: %q", got)
+	}
 	sod := wf.Transitions[2].Conditions.Conditions
 	if len(sod) != 2 || sod[1].RuleKey != "system:separation-of-duties" || sod[1].Parameters["fromStatusId"] != "11216" || sod[1].Parameters["toStatusId"] != "11217" {
 		t.Fatalf("SoD rule: %+v", sod)
@@ -374,5 +377,30 @@ func TestOrderTransitionsLike_FollowsPriorOrderThenServerOrder(t *testing.T) {
 	}
 	if len(orderTransitionsLike(nil, []string{"A"})) != 0 {
 		t.Fatal("nil in, nil out")
+	}
+}
+
+// Jira shows errorMessage verbatim when a transition is refused (2026-09-17: users saw "customfield_10809 필수"),
+// so the message names the field and follows the template — for new validators and for ones the server already has.
+func TestMergeValidators_MessageNamesTheFieldAndFollowsTheTemplate(t *testing.T) {
+	spec := workflowSpec{
+		RequiredFieldMessage: "«{field}» 칸을 채워 주세요 ({id})",
+		FieldNames:           map[string]string{"customfield_10761": "변경 내용"},
+	}
+	ts := workflowTransitionSpec{RequiredFields: []string{"customfield_10761", "customfield_10999"}}
+	base := []workflowRule{{ID: "keep-me", RuleKey: ruleKeyValidateField, Parameters: map[string]string{
+		"ruleType": "fieldRequired", "fieldsRequired": "customfield_10761", "ignoreContext": "true", "errorMessage": "customfield_10761 필수"}}}
+	out := mergeValidators(spec, ts, base)
+	if len(out) != 2 {
+		t.Fatalf("validators: %+v", out)
+	}
+	if out[0].ID != "keep-me" || out[0].Parameters["errorMessage"] != "«변경 내용» 칸을 채워 주세요 (customfield_10761)" {
+		t.Fatalf("kept validator must keep its id and get the new message: %+v", out[0])
+	}
+	if base[0].Parameters["errorMessage"] != "customfield_10761 필수" {
+		t.Fatal("server document must not be mutated")
+	}
+	if out[1].Parameters["errorMessage"] != "«customfield_10999» 칸을 채워 주세요 (customfield_10999)" { // unknown name → id
+		t.Fatalf("new validator message: %+v", out[1])
 	}
 }

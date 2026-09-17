@@ -3,6 +3,7 @@
 resource "atlassian_jira_workflow" "infra_change" {
   name        = "Infrastructure change"
   description = "Procedure document: drive:<fileId>"
+  required_field_message = "«{field}» 칸을 채워 주세요" # shown by Jira when a required field is empty; {field} = display name
 
   statuses = [
     { status_id = atlassian_jira_status.requested.id }, # first = initial status

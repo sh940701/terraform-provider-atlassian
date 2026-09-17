@@ -17,6 +17,7 @@ Manages a company-managed (global) Jira Cloud workflow through the versioned wor
 resource "atlassian_jira_workflow" "infra_change" {
   name        = "Infrastructure change"
   description = "Procedure document: drive:<fileId>"
+  required_field_message = "«{field}» 칸을 채워 주세요" # shown by Jira when a required field is empty; {field} = display name
 
   statuses = [
     { status_id = atlassian_jira_status.requested.id }, # first = initial status
@@ -68,6 +69,7 @@ resource "atlassian_jira_workflow" "infra_change" {
 ### Optional
 
 - `description` (String) The description of the workflow.
+- `required_field_message` (String) Template for the message Jira shows when a `required_fields` validator refuses a transition. `{field}` is the field's display name (looked up in Jira at apply time), `{id}` its id. Applies to every transition of this workflow. Default: `{field} is required`.
 
 ### Read-Only
 

@@ -47,6 +47,8 @@ type workflowResourceModel struct {
 	Statuses    types.List   `tfsdk:"statuses"`
 	Transitions types.List   `tfsdk:"transitions"`
 	Version     types.Int64  `tfsdk:"version"`
+
+	RequiredFieldMessage types.String `tfsdk:"required_field_message"`
 }
 
 type workflowStatusModel struct {
@@ -144,6 +146,14 @@ func (r *workflowResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Description: "The document version number Jira assigns; used as an optimistic lock on update.",
 				Computed:    true,
 			},
+			"required_field_message": schema.StringAttribute{
+				Description: "Template for the message Jira shows when a `required_fields` validator refuses a transition. " +
+					"`{field}` is the field's display name (looked up in Jira at apply time), `{id}` its id. " +
+					"Applies to every transition of this workflow. Default: `{field} is required`.",
+				Optional: true,
+				Computed: true,
+				Default:  stringdefault.StaticString(defaultRequiredFieldMessage),
+			},
 			"statuses": schema.ListNestedAttribute{
 				Description: "Existing global statuses used by the workflow, in layout order. The first one is the initial status.",
 				Required:    true,
@@ -238,7 +248,7 @@ func (r *workflowResource) Configure(_ context.Context, req resource.ConfigureRe
 
 func specFromModel(ctx context.Context, m workflowResourceModel) (workflowSpec, diag.Diagnostics) {
 	var diags diag.Diagnostics
-	spec := workflowSpec{Name: m.Name.ValueString(), Description: m.Description.ValueString()}
+	spec := workflowSpec{Name: m.Name.ValueString(), Description: m.Description.ValueString(), RequiredFieldMessage: m.RequiredFieldMessage.ValueString()}
 
 	var statuses []workflowStatusModel
 	diags.Append(m.Statuses.ElementsAs(ctx, &statuses, false)...)
@@ -487,6 +497,12 @@ func (r *workflowResource) Create(ctx context.Context, req resource.CreateReques
 		resp.Diagnostics.AddError("Invalid workflow configuration", err.Error())
 		return
 	}
+	names, err := r.fieldNames(ctx, spec)
+	if err != nil {
+		resp.Diagnostics.AddError("Error creating workflow", err.Error())
+		return
+	}
+	spec.FieldNames = names
 
 	defs, err := r.statusDefsFor(ctx, spec.StatusIDs, nil)
 	if err != nil {
@@ -557,6 +573,9 @@ func (r *workflowResource) Read(ctx context.Context, req resource.ReadRequest, r
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if state.RequiredFieldMessage.IsNull() { // imported: Jira does not hand the template back
+		state.RequiredFieldMessage = types.StringValue(defaultRequiredFieldMessage)
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -577,6 +596,12 @@ func (r *workflowResource) Update(ctx context.Context, req resource.UpdateReques
 		resp.Diagnostics.AddError("Invalid workflow configuration", err.Error())
 		return
 	}
+	names, err := r.fieldNames(ctx, spec)
+	if err != nil {
+		resp.Diagnostics.AddError("Error updating workflow", err.Error())
+		return
+	}
+	spec.FieldNames = names
 
 	// Always merge into the freshest server document (version lock, rule ids).
 	id := state.ID.ValueString()
@@ -667,4 +692,39 @@ func (r *workflowResource) Delete(ctx context.Context, req resource.DeleteReques
 
 func (r *workflowResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+const defaultRequiredFieldMessage = "{field} is required"
+
+// fieldNames returns id → display name for every Jira field, so required-field messages can name the
+// field the way users see it. Skipped (nil) when no transition requires a field.
+func (r *workflowResource) fieldNames(ctx context.Context, spec workflowSpec) (map[string]string, error) {
+	needed := false
+	for _, t := range spec.Transitions {
+		if len(t.RequiredFields) > 0 {
+			needed = true
+			break
+		}
+	}
+	if !needed {
+		return nil, nil
+	}
+	var fields []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	status, err := r.client.GetWithStatus(ctx, "/rest/api/3/field", &fields)
+	if err != nil {
+		return nil, fmt.Errorf("reading field names: %w", err)
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("reading field names: HTTP %d", status)
+	}
+	out := make(map[string]string, len(fields))
+	for _, f := range fields {
+		if f.ID != "" && f.Name != "" {
+			out[f.ID] = f.Name
+		}
+	}
+	return out, nil
 }

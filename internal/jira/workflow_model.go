@@ -51,6 +51,12 @@ type workflowSpec struct {
 	Description string
 	StatusIDs   []string // order = layout order; first = initial status
 	Transitions []workflowTransitionSpec
+
+	// RequiredFieldMessage is the errorMessage template for required-field validators:
+	// {field} = the field's display name (from FieldNames, else the id), {id} = the field id.
+	// Empty means "{field} is required".
+	RequiredFieldMessage string
+	FieldNames           map[string]string // field id → display name, looked up by the resource before a write
 }
 
 type workflowTransitionSpec struct {
@@ -284,7 +290,7 @@ func buildDocument(spec workflowSpec, defs map[string]workflowStatusDef, current
 		if cur, ok := curTransitions[ts.Name]; ok {
 			base = cur
 		}
-		doc.Transitions = append(doc.Transitions, mergeTransition(ts, base, defs))
+		doc.Transitions = append(doc.Transitions, mergeTransition(spec, ts, base, defs))
 	}
 	assignTransitionIDs(doc.Transitions)
 	return doc, nil
@@ -331,7 +337,7 @@ func assignTransitionIDs(transitions []workflowTransition) {
 
 // mergeTransition writes the managed parts of ts over base (a server
 // transition with the same name, or the zero value for a new one).
-func mergeTransition(ts workflowTransitionSpec, base workflowTransition, defs map[string]workflowStatusDef) workflowTransition {
+func mergeTransition(spec workflowSpec, ts workflowTransitionSpec, base workflowTransition, defs map[string]workflowStatusDef) workflowTransition {
 	t := base
 	t.Name = ts.Name
 	t.Type = ts.Type
@@ -354,7 +360,7 @@ func mergeTransition(ts workflowTransitionSpec, base workflowTransition, defs ma
 
 	t.Conditions = mergeConditions(ts, base.Conditions, defs)
 	t.Actions = mergeActions(ts, base.Actions)
-	t.Validators = mergeValidators(ts, base.Validators)
+	t.Validators = mergeValidators(spec, ts, base.Validators)
 	return t
 }
 
@@ -459,7 +465,21 @@ func isRequiredFieldValidator(v workflowRule) bool {
 	return v.RuleKey == ruleKeyValidateField && v.Parameters["ruleType"] == "fieldRequired"
 }
 
-func mergeValidators(ts workflowTransitionSpec, base []workflowRule) []workflowRule {
+// requiredFieldMessage renders spec.RequiredFieldMessage for one field. Jira shows this text verbatim
+// when the transition is refused, so it names the field the way the user sees it, not customfield_NNNNN.
+func requiredFieldMessage(spec workflowSpec, id string) string {
+	tpl := spec.RequiredFieldMessage
+	if tpl == "" {
+		tpl = defaultRequiredFieldMessage
+	}
+	name := spec.FieldNames[id]
+	if name == "" {
+		name = id
+	}
+	return strings.NewReplacer("{field}", name, "{id}", id).Replace(tpl)
+}
+
+func mergeValidators(spec workflowSpec, ts workflowTransitionSpec, base []workflowRule) []workflowRule {
 	want := map[string]bool{}
 	for _, f := range ts.RequiredFields {
 		want[f] = true
@@ -470,6 +490,16 @@ func mergeValidators(ts workflowTransitionSpec, base []workflowRule) []workflowR
 		if isRequiredFieldValidator(v) {
 			f := v.Parameters["fieldsRequired"]
 			if want[f] && !done[f] {
+				// Keep the server's rule id. Refresh the message only when the caller brought a template or names
+				// (the resource always does); a spec read back from a document has neither and must round-trip unchanged.
+				if spec.RequiredFieldMessage != "" || spec.FieldNames != nil {
+					params := make(map[string]string, len(v.Parameters)+1)
+					for k, val := range v.Parameters {
+						params[k] = val
+					}
+					params["errorMessage"] = requiredFieldMessage(spec, f)
+					v = workflowRule{ID: v.ID, RuleKey: v.RuleKey, Parameters: params}
+				}
 				out = append(out, v)
 				done[f] = true
 			}
@@ -483,7 +513,7 @@ func mergeValidators(ts workflowTransitionSpec, base []workflowRule) []workflowR
 		}
 		out = append(out, workflowRule{RuleKey: ruleKeyValidateField, Parameters: map[string]string{
 			"ruleType": "fieldRequired", "fieldsRequired": f, "ignoreContext": "true",
-			"errorMessage": fmt.Sprintf("%s 필수", f),
+			"errorMessage": requiredFieldMessage(spec, f),
 		}})
 		done[f] = true
 	}
