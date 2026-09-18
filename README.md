@@ -1,12 +1,11 @@
 > **K-CARE fork** of [lbajsarowicz/terraform-provider-atlassian](https://github.com/lbajsarowicz/terraform-provider-atlassian) (GPL-3.0-or-later).
 > Rewrites `atlassian_jira_workflow` on the versioned workflow API (transitions · who may transition · separation of duties · assignee post function · required-field validators, in-place updates)
-> and adds `atlassian_jira_webhook` and `atlassian_jira_group_member`. Published to the HCP Terraform private registry as `bsg-kcare/atlassian`.
+> and adds `atlassian_jira_webhook` and `atlassian_jira_group_member`. Published on the public Terraform Registry as [`bmp-cloud/atlassian`](https://registry.terraform.io/providers/bmp-cloud/atlassian/latest).
 
 # terraform-provider-atlassian
 
-[![Terraform Registry](https://img.shields.io/badge/terraform-registry-blueviolet)](https://registry.terraform.io/providers/lbajsarowicz/atlassian/latest)
-[![CI](https://github.com/lbajsarowicz/terraform-provider-atlassian/actions/workflows/ci.yml/badge.svg)](https://github.com/lbajsarowicz/terraform-provider-atlassian/actions/workflows/ci.yml)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/lbajsarowicz/terraform-provider-atlassian)](https://go.dev/)
+[![Terraform Registry](https://img.shields.io/badge/terraform-registry-blueviolet)](https://registry.terraform.io/providers/bmp-cloud/atlassian/latest)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/bmp-cloud/terraform-provider-atlassian)](https://go.dev/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 Terraform/OpenTofu provider for managing [Atlassian Cloud](https://www.atlassian.com/cloud) (Jira + Confluence) configuration as infrastructure as code. Supports projects, permission schemes, workflows, issue types, custom fields, screens, roles, and Confluence spaces — with full import and drift detection.
@@ -24,7 +23,7 @@ Terraform/OpenTofu provider for managing [Atlassian Cloud](https://www.atlassian
 terraform {
   required_providers {
     atlassian = {
-      source  = "lbajsarowicz/atlassian"
+      source  = "bmp-cloud/atlassian"
       version = "~> 0.1"
     }
   }
