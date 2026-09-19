@@ -20,9 +20,10 @@ type AtlassianProvider struct {
 }
 
 type AtlassianProviderModel struct {
-	URL   types.String `tfsdk:"url"`
-	User  types.String `tfsdk:"user"`
-	Token types.String `tfsdk:"token"`
+	URL     types.String `tfsdk:"url"`
+	User    types.String `tfsdk:"user"`
+	Token   types.String `tfsdk:"token"`
+	CloudID types.String `tfsdk:"cloud_id"`
 }
 
 func New(version string) func() provider.Provider {
@@ -55,6 +56,10 @@ func (p *AtlassianProvider) Schema(_ context.Context, _ provider.SchemaRequest, 
 				Optional:    true,
 				Sensitive:   true,
 			},
+			"cloud_id": schema.StringAttribute{
+				Description: "Atlassian Cloud ID for this site, used by resources that call the Automation API. Optional — when unset it is looked up from the site's /_edge/tenant_info endpoint on first use and cached.",
+				Optional:    true,
+			},
 		},
 	}
 }
@@ -79,12 +84,17 @@ func (p *AtlassianProvider) Configure(ctx context.Context, req provider.Configur
 	if !config.Token.IsNull() && !config.Token.IsUnknown() {
 		token = config.Token.ValueString()
 	}
+	cloudID := ""
+	if !config.CloudID.IsNull() && !config.CloudID.IsUnknown() {
+		cloudID = config.CloudID.ValueString()
+	}
 
 	client, err := atlassian.NewClient(atlassian.ClientConfig{
 		URL:     url,
 		User:    user,
 		Token:   token,
 		Version: p.version,
+		CloudID: cloudID,
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to create Atlassian client", err.Error())

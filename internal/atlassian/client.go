@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,19 +22,37 @@ const (
 	baseDelay            = 1 * time.Second
 	maxRetryDelay        = 30 * time.Second
 	maxRetryAfterSeconds = 60
+
+	// defaultAutomationBase is the public Atlassian Automation API base
+	// URL. A cloud ID and a rest path are appended to it by AutomationURL.
+	defaultAutomationBase = "https://api.atlassian.com/automation/public/jira"
+
+	// tenantInfoPath resolves the site URL configured on the client to its
+	// Atlassian cloud ID.
+	tenantInfoPath = "/_edge/tenant_info"
 )
 
 // Client is the Atlassian Cloud API client.
 type Client struct {
-	baseURL    string
-	user       string
-	token      string
-	version    string
-	httpClient *http.Client
+	baseURL        string
+	user           string
+	token          string
+	version        string
+	httpClient     *http.Client
+	automationBase string
 
 	// Long-running task polling (see task.go). Zero means package defaults.
 	taskPollInterval time.Duration
 	taskTimeout      time.Duration
+
+	// cloudID caching. configuredCloudID, when non-empty, is returned as-is
+	// and the tenant_info lookup is never performed. Otherwise cloudIDOnce
+	// guards a single lookup, whose result (or error) is cached in
+	// cloudIDValue / cloudIDErr.
+	configuredCloudID string
+	cloudIDOnce       sync.Once
+	cloudIDValue      string
+	cloudIDErr        error
 }
 
 // ClientConfig holds the configuration for creating a new Client.
@@ -45,6 +64,13 @@ type ClientConfig struct {
 	// ResponseHeaderTimeout is how long to wait for response headers before
 	// cancelling the request. Defaults to 30s. Set a shorter value in tests.
 	ResponseHeaderTimeout time.Duration
+	// CloudID, when set, is used as-is by CloudID/AutomationURL and skips
+	// the /_edge/tenant_info lookup entirely. Optional.
+	CloudID string
+	// AutomationBase overrides the Automation API base URL used by
+	// AutomationURL. Defaults to the public Atlassian Automation API.
+	// Tests point this at an httptest server. Optional.
+	AutomationBase string
 }
 
 // NewClient creates a new Atlassian API client.
@@ -85,21 +111,76 @@ func NewClient(config ClientConfig) (*Client, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = responseHeaderTimeout
 
+	automationBase := config.AutomationBase
+	if automationBase == "" {
+		automationBase = defaultAutomationBase
+	}
+	automationBase = strings.TrimRight(automationBase, "/")
+
 	return &Client{
-		baseURL: baseURL,
-		user:    user,
-		token:   token,
-		version: config.Version,
+		baseURL:        baseURL,
+		user:           user,
+		token:          token,
+		version:        config.Version,
+		automationBase: automationBase,
 		httpClient: &http.Client{
 			Timeout:   30 * time.Second,
 			Transport: transport,
 		},
+		configuredCloudID: config.CloudID,
 	}, nil
 }
 
 // BaseURL returns the base URL of the Atlassian instance.
 func (c *Client) BaseURL() string {
 	return c.baseURL
+}
+
+// tenantInfoResponse is the shape of the GET /_edge/tenant_info response.
+type tenantInfoResponse struct {
+	CloudID string `json:"cloudId"`
+}
+
+// CloudID returns the Atlassian cloud ID for the site configured on this
+// client. If ClientConfig.CloudID was set, it is returned directly and no
+// network call is made. Otherwise the ID is looked up once via
+// GET {baseURL}/_edge/tenant_info and cached (success or failure) for the
+// lifetime of the client.
+func (c *Client) CloudID(ctx context.Context) (string, error) {
+	if c.configuredCloudID != "" {
+		return c.configuredCloudID, nil
+	}
+
+	c.cloudIDOnce.Do(func() {
+		var info tenantInfoResponse
+		if err := c.Get(ctx, tenantInfoPath, &info); err != nil {
+			c.cloudIDErr = fmt.Errorf("looking up cloud ID from %s: %w", tenantInfoPath, err)
+			return
+		}
+		if info.CloudID == "" {
+			c.cloudIDErr = fmt.Errorf("looking up cloud ID from %s: response had no cloudId", tenantInfoPath)
+			return
+		}
+		c.cloudIDValue = info.CloudID
+	})
+
+	if c.cloudIDErr != nil {
+		return "", c.cloudIDErr
+	}
+	return c.cloudIDValue, nil
+}
+
+// AutomationURL builds an absolute URL under the Atlassian Automation API
+// for the given rest path (e.g. "/rule"), resolving this client's cloud ID
+// first. The result is <AutomationBase>/<cloudId>/rest/v1<path> and is meant
+// to be passed straight to Client.Do (or Get/Post/...), which sends
+// requests to an absolute URL as-is rather than prefixing it with baseURL.
+func (c *Client) AutomationURL(ctx context.Context, path string) (string, error) {
+	cloudID, err := c.CloudID(ctx)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s/%s/rest/v1%s", c.automationBase, cloudID, path), nil
 }
 
 // QueryEscape escapes a string for use in URL query parameters.
@@ -113,9 +194,16 @@ func PathEscape(s string) string {
 	return url.PathEscape(s)
 }
 
-// newRequest creates a new HTTP request with authentication and standard headers.
+// newRequest creates a new HTTP request with authentication and standard
+// headers. If path is already an absolute URL (http:// or https://), it is
+// used as-is instead of being appended to baseURL — this lets callers reach
+// hosts other than the configured Atlassian site (e.g. the Automation API)
+// while still getting Basic auth and the standard headers.
 func (c *Client) newRequest(ctx context.Context, method, path string, body *bytes.Reader) (*http.Request, error) {
-	u := c.baseURL + path
+	u := path
+	if !strings.HasPrefix(path, "http://") && !strings.HasPrefix(path, "https://") {
+		u = c.baseURL + path
+	}
 
 	var req *http.Request
 	var err error
