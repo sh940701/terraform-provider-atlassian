@@ -20,10 +20,11 @@ type AtlassianProvider struct {
 }
 
 type AtlassianProviderModel struct {
-	URL     types.String `tfsdk:"url"`
-	User    types.String `tfsdk:"user"`
-	Token   types.String `tfsdk:"token"`
-	CloudID types.String `tfsdk:"cloud_id"`
+	URL               types.String `tfsdk:"url"`
+	User              types.String `tfsdk:"user"`
+	Token             types.String `tfsdk:"token"`
+	CloudID           types.String `tfsdk:"cloud_id"`
+	AutomationBaseURL types.String `tfsdk:"automation_base_url"`
 }
 
 func New(version string) func() provider.Provider {
@@ -60,6 +61,10 @@ func (p *AtlassianProvider) Schema(_ context.Context, _ provider.SchemaRequest, 
 				Description: "Atlassian Cloud ID for this site, used by resources that call the Automation API. Optional — when unset it is looked up from the site's /_edge/tenant_info endpoint on first use and cached.",
 				Optional:    true,
 			},
+			"automation_base_url": schema.StringAttribute{
+				Description: "Overrides the base URL of the Atlassian Automation API (normally https://api.atlassian.com/automation/public/jira). For testing or private deployments only.",
+				Optional:    true,
+			},
 		},
 	}
 }
@@ -88,13 +93,18 @@ func (p *AtlassianProvider) Configure(ctx context.Context, req provider.Configur
 	if !config.CloudID.IsNull() && !config.CloudID.IsUnknown() {
 		cloudID = config.CloudID.ValueString()
 	}
+	automationBaseURL := ""
+	if !config.AutomationBaseURL.IsNull() && !config.AutomationBaseURL.IsUnknown() {
+		automationBaseURL = config.AutomationBaseURL.ValueString()
+	}
 
 	client, err := atlassian.NewClient(atlassian.ClientConfig{
-		URL:     url,
-		User:    user,
-		Token:   token,
-		Version: p.version,
-		CloudID: cloudID,
+		URL:            url,
+		User:           user,
+		Token:          token,
+		Version:        p.version,
+		CloudID:        cloudID,
+		AutomationBase: automationBaseURL,
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to create Atlassian client", err.Error())
@@ -131,6 +141,7 @@ func (p *AtlassianProvider) Resources(_ context.Context) []func() resource.Resou
 		jira.NewScreenSchemeResource,
 		jira.NewIssueTypeScreenSchemeResource,
 		jira.NewProjectIssueTypeScreenSchemeResource,
+		jira.NewAutomationRuleResource,
 		confluence.NewSpaceResource,
 		confluence.NewSpacePermissionResource,
 	}

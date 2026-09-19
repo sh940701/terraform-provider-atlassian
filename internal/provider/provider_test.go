@@ -25,11 +25,11 @@ func TestProviderSchema(t *testing.T) {
 		t.Fatal("provider schema is nil")
 	}
 
-	if len(schemaResp.Provider.Block.Attributes) != 4 {
-		t.Fatalf("expected 4 provider attributes, got %d", len(schemaResp.Provider.Block.Attributes))
+	if len(schemaResp.Provider.Block.Attributes) != 5 {
+		t.Fatalf("expected 5 provider attributes, got %d", len(schemaResp.Provider.Block.Attributes))
 	}
 
-	expectedAttrs := []string{"url", "user", "token", "cloud_id"}
+	expectedAttrs := []string{"url", "user", "token", "cloud_id", "automation_base_url"}
 	attrMap := make(map[string]bool)
 	for _, attr := range schemaResp.Provider.Block.Attributes {
 		attrMap[attr.Name] = true
