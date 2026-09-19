@@ -22,10 +22,11 @@ import (
 // so it doubles as both the Jira site and the Automation API base — origins
 // match trivially, which is fine for what this test exercises.
 type automationRuleMock struct {
-	mu      sync.Mutex
-	cloudID string
-	nextSeq int
-	rules   map[string]map[string]interface{} // uuid -> stored rule document (as sent, plus "uuid")
+	mu            sync.Mutex
+	cloudID       string
+	nextSeq       int
+	rules         map[string]map[string]interface{} // uuid -> stored rule document (as sent, plus "uuid")
+	omitUUIDOnGet bool                              // simulates a GET response that (contrary to what's normally observed) omits "uuid"
 }
 
 func newAutomationRuleMock() *automationRuleMock {
@@ -79,8 +80,17 @@ func (m *automationRuleMock) handler() http.HandlerFunc {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
+			resp := doc
+			if m.omitUUIDOnGet {
+				resp = make(map[string]interface{}, len(doc))
+				for k, v := range doc {
+					if k != "uuid" {
+						resp[k] = v
+					}
+				}
+			}
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(doc)
+			_ = json.NewEncoder(w).Encode(resp)
 
 		case r.Method == http.MethodDelete && ruleIDRe.MatchString(r.URL.Path):
 			id := ruleIDRe.FindStringSubmatch(r.URL.Path)[1]
@@ -104,6 +114,12 @@ func (m *automationRuleMock) only() map[string]interface{} {
 		return doc
 	}
 	return nil
+}
+
+func (m *automationRuleMock) setOmitUUIDOnGet(v bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.omitUUIDOnGet = v
 }
 
 // setupAutomationRuleMock starts the mock server and returns its URL. Unlike
@@ -152,6 +168,12 @@ func TestAccAutomationRuleResource_basic(t *testing.T) {
 	serverURL := setupAutomationRuleMock(t, mock)
 
 	resource.Test(t, resource.TestCase{
+		// This test talks only to the local httptest server above, never a
+		// real Atlassian site — IsUnitTest lets it run under plain
+		// `go test` (and therefore CI's ci.yml, which does not set TF_ACC)
+		// instead of being silently skipped like a real TF_ACC=1 acceptance
+		// test would be.
+		IsUnitTest:               true,
 		ProtoV6ProviderFactories: testutil.ProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
@@ -211,6 +233,46 @@ func TestAccAutomationRuleResource_basic(t *testing.T) {
 				Config:             automationRuleConfig(serverURL, bodyRawJSON),
 				PlanOnly:           true,
 				ExpectNonEmptyPlan: false,
+			},
+		},
+	})
+}
+
+// TestAccAutomationRuleResource_ReadKeepsIdentifierWhenGetOmitsUUID covers a
+// reviewer finding: Read must not blindly overwrite `uuid`/`id` from the GET
+// document. If a response ever omitted "uuid" (contrary to what's normally
+// observed — GET is expected to echo it back), state must keep the prior
+// identifier rather than losing it, since a lost id sends every later
+// Read/Update/Delete to "/rule/" instead of failing loudly or disappearing
+// cleanly.
+func TestAccAutomationRuleResource_ReadKeepsIdentifierWhenGetOmitsUUID(t *testing.T) {
+	mock := newAutomationRuleMock()
+	serverURL := setupAutomationRuleMock(t, mock)
+
+	resource.Test(t, resource.TestCase{
+		IsUnitTest:               true,
+		ProtoV6ProviderFactories: testutil.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: automationRuleConfig(serverURL, bodyRawJSON),
+				Check:  resource.TestCheckResourceAttr("atlassian_jira_automation_rule.test", "uuid", "rule-uuid-1"),
+			},
+			{
+				// From here on, GET omits "uuid". Nothing else about the
+				// rule changed, so if Read keeps the prior uuid/id (the fix
+				// under test), the refresh plan is empty; if it instead
+				// wipes them to "", the plan is non-empty (id is Computed
+				// with UseStateForUnknown, so an unexpected "" would surface
+				// as a would-recreate diff) and this step fails.
+				PreConfig: func() {
+					mock.setOmitUUIDOnGet(true)
+				},
+				RefreshState:       true,
+				ExpectNonEmptyPlan: false,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("atlassian_jira_automation_rule.test", "uuid", "rule-uuid-1"),
+					resource.TestCheckResourceAttr("atlassian_jira_automation_rule.test", "id", "rule-uuid-1"),
+				),
 			},
 		},
 	})

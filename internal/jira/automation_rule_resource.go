@@ -252,17 +252,26 @@ func (r *automationRuleResource) Read(ctx context.Context, req resource.ReadRequ
 	state.ProjectIDs = projectIDs
 	state.Body = jsontypes.NewNormalizedValue(body)
 	state.ActorAccountID = types.StringValue(doc.Actor.accountID())
-	state.UUID = types.StringValue(doc.UUID)
-	state.ID = types.StringValue(doc.UUID)
+	// doc.UUID is expected to echo the id we just requested by, but if a
+	// response ever omits it, keep the prior state's uuid/id rather than
+	// wiping the resource's identifier — losing it would make every
+	// subsequent Read/Update/Delete address /rule/ (no id) instead of
+	// disappearing cleanly or erroring loudly here.
+	if doc.UUID != "" {
+		state.UUID = types.StringValue(doc.UUID)
+		state.ID = types.StringValue(doc.UUID)
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-// Update is not implemented yet (T6): the Automation Rule Management API's
-// update semantics are unconfirmed, and no attribute in this resource's
-// schema currently carries a plan modifier that would route a change here
-// without also going through Create — this method exists only so
-// automationRuleResource satisfies resource.Resource.
+// Update exists only so automationRuleResource satisfies resource.Resource;
+// no attribute in this schema has RequiresReplace, so a change to any of
+// name/description/state/project_ids/body/actor_account_id plans an
+// in-place update and lands here. The Automation Rule Management API's
+// update semantics are unconfirmed (T5), so this stub fails the apply
+// instead of guessing — T6's acceptance criteria include replacing it with
+// a real implementation.
 func (r *automationRuleResource) Update(_ context.Context, _ resource.UpdateRequest, resp *resource.UpdateResponse) {
 	resp.Diagnostics.AddError(
 		"Update not yet supported",
