@@ -34,6 +34,7 @@ provider "atlassian" {
 
 ### Optional
 
+- `cloud_id` (String) Atlassian Cloud ID for this site, used by resources that call the Automation API. Optional — when unset it is looked up from the site's /_edge/tenant_info endpoint on first use and cached.
 - `token` (String, Sensitive) Atlassian API token for authentication. Falls back to ATLASSIAN_TOKEN env var.
 - `url` (String) Atlassian Cloud instance URL (e.g. https://mysite.atlassian.net). Falls back to ATLASSIAN_URL env var.
 - `user` (String) Atlassian account email for API authentication. Falls back to ATLASSIAN_USER env var.

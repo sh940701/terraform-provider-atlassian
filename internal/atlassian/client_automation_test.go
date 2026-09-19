@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -141,12 +142,15 @@ func TestAutomationNewRequestAbsoluteURLSkipsBaseURLPrefixAndKeepsAuth(t *testin
 
 	// baseURL is deliberately a different host than the absolute request
 	// target, so a bug that still prefixes baseURL would produce a
-	// malformed URL rather than silently hitting the right server.
+	// malformed URL rather than silently hitting the right server. The
+	// target host must still be an *allowed* absolute-URL host, so it is
+	// configured as AutomationBase.
 	client, err := NewClient(ClientConfig{
-		URL:     "https://base.example.invalid",
-		User:    "user@example.com",
-		Token:   "token123",
-		Version: "test",
+		URL:            "https://base.example.invalid",
+		User:           "user@example.com",
+		Token:          "token123",
+		Version:        "test",
+		AutomationBase: server.URL,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
@@ -170,5 +174,104 @@ func TestAutomationNewRequestAbsoluteURLSkipsBaseURLPrefixAndKeepsAuth(t *testin
 	}
 	if gotUser != "user@example.com" || gotPass != "token123" {
 		t.Errorf("unexpected basic auth credentials: user=%q pass=%q", gotUser, gotPass)
+	}
+}
+
+// TestAutomationCloudIDDoesNotCacheFailedLookupAndRetries covers review
+// finding #2: a failed tenant_info lookup must not be cached forever — the
+// next call has to retry.
+//
+// The failing response here is 400 Bad Request rather than the reviewer's
+// suggested 500: Client.Do already retries 429/5xx internally with
+// exponential backoff (up to 5 retries, delays up to 30s each), so a mock
+// that returns 500 once and 200 afterwards would usually be swallowed by
+// that internal retry within a single CloudID call — the first call would
+// quietly succeed a second or two later instead of surfacing an error, and
+// the test would take tens of seconds. 400 exercises the exact caching bug
+// (CloudID must not remember the failure) without depending on, or being
+// slowed down by, the unrelated 5xx retry path.
+func TestAutomationCloudIDDoesNotCacheFailedLookupAndRetries(t *testing.T) {
+	var hits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_edge/tenant_info" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		n := atomic.AddInt32(&hits, 1)
+		if n == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"cloudId": "abc"})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientConfig{
+		URL:     server.URL,
+		User:    "user@example.com",
+		Token:   "token",
+		Version: "test",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	if _, err := client.CloudID(context.Background()); err == nil {
+		t.Fatal("expected an error on the first (failing) lookup")
+	}
+
+	id, err := client.CloudID(context.Background())
+	if err != nil {
+		t.Fatalf("expected the second lookup to retry and succeed, got error: %s", err)
+	}
+	if id != "abc" {
+		t.Errorf("CloudID: got %q, want %q", id, "abc")
+	}
+
+	if atomic.LoadInt32(&hits) != 2 {
+		t.Errorf("expected tenant_info to be hit exactly twice (one failed lookup + one retry), got %d", hits)
+	}
+}
+
+// TestAutomationNewRequestRejectsForeignAbsoluteURL covers review finding
+// #4: an absolute URL is only sent if its scheme+host matches the
+// configured site (baseURL) or the configured AutomationBase. Anything else
+// must be rejected before Basic auth is attached or any network call is
+// made.
+func TestAutomationNewRequestRejectsForeignAbsoluteURL(t *testing.T) {
+	var foreignHits int32
+	foreignServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&foreignHits, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer foreignServer.Close()
+
+	siteServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer siteServer.Close()
+
+	client, err := NewClient(ClientConfig{
+		URL:            siteServer.URL,
+		User:           "user@example.com",
+		Token:          "token",
+		Version:        "test",
+		AutomationBase: siteServer.URL,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	_, err = client.Do(context.Background(), "GET", foreignServer.URL+"/steal", nil)
+	if err == nil {
+		t.Fatal("expected an error for an absolute URL whose host is neither the configured site nor the Automation API")
+	}
+	if !strings.Contains(err.Error(), "disallowed") {
+		t.Errorf("expected error to explain the host was disallowed, got: %s", err)
+	}
+	if atomic.LoadInt32(&foreignHits) != 0 {
+		t.Errorf("expected the foreign host to never receive the request, got %d hits", foreignHits)
 	}
 }

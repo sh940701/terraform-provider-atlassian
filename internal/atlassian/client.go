@@ -34,25 +34,29 @@ const (
 
 // Client is the Atlassian Cloud API client.
 type Client struct {
-	baseURL        string
-	user           string
-	token          string
-	version        string
-	httpClient     *http.Client
-	automationBase string
+	baseURL          string
+	user             string
+	token            string
+	version          string
+	httpClient       *http.Client
+	automationBase   string
+	baseOrigin       string // scheme://host of baseURL
+	automationOrigin string // scheme://host of automationBase
 
 	// Long-running task polling (see task.go). Zero means package defaults.
 	taskPollInterval time.Duration
 	taskTimeout      time.Duration
 
 	// cloudID caching. configuredCloudID, when non-empty, is returned as-is
-	// and the tenant_info lookup is never performed. Otherwise cloudIDOnce
-	// guards a single lookup, whose result (or error) is cached in
-	// cloudIDValue / cloudIDErr.
+	// and the tenant_info lookup is never performed. Otherwise cloudIDMu
+	// guards cloudIDValue, which caches only a *successful* lookup: a
+	// failed lookup is never stored, so the next call retries it. The lock
+	// is held across the lookup itself, so concurrent callers either see
+	// the cached value or wait for the single in-flight lookup rather than
+	// firing duplicate requests.
 	configuredCloudID string
-	cloudIDOnce       sync.Once
+	cloudIDMu         sync.Mutex
 	cloudIDValue      string
-	cloudIDErr        error
 }
 
 // ClientConfig holds the configuration for creating a new Client.
@@ -118,17 +122,30 @@ func NewClient(config ClientConfig) (*Client, error) {
 	automationBase = strings.TrimRight(automationBase, "/")
 
 	return &Client{
-		baseURL:        baseURL,
-		user:           user,
-		token:          token,
-		version:        config.Version,
-		automationBase: automationBase,
+		baseURL:          baseURL,
+		user:             user,
+		token:            token,
+		version:          config.Version,
+		automationBase:   automationBase,
+		baseOrigin:       originOf(baseURL),
+		automationOrigin: originOf(automationBase),
 		httpClient: &http.Client{
 			Timeout:   30 * time.Second,
 			Transport: transport,
 		},
 		configuredCloudID: config.CloudID,
 	}, nil
+}
+
+// originOf returns the scheme://host portion of rawURL (e.g.
+// "https://mysite.atlassian.net"), or "" if rawURL cannot be parsed or has
+// no host.
+func originOf(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // BaseURL returns the base URL of the Atlassian instance.
@@ -143,30 +160,31 @@ type tenantInfoResponse struct {
 
 // CloudID returns the Atlassian cloud ID for the site configured on this
 // client. If ClientConfig.CloudID was set, it is returned directly and no
-// network call is made. Otherwise the ID is looked up once via
-// GET {baseURL}/_edge/tenant_info and cached (success or failure) for the
-// lifetime of the client.
+// network call is made. Otherwise the ID is looked up via
+// GET {baseURL}/_edge/tenant_info. Only a *successful* lookup is cached —
+// if the lookup fails, nothing is stored and the next call to CloudID
+// retries it from scratch, rather than returning the same error forever.
 func (c *Client) CloudID(ctx context.Context) (string, error) {
 	if c.configuredCloudID != "" {
 		return c.configuredCloudID, nil
 	}
 
-	c.cloudIDOnce.Do(func() {
-		var info tenantInfoResponse
-		if err := c.Get(ctx, tenantInfoPath, &info); err != nil {
-			c.cloudIDErr = fmt.Errorf("looking up cloud ID from %s: %w", tenantInfoPath, err)
-			return
-		}
-		if info.CloudID == "" {
-			c.cloudIDErr = fmt.Errorf("looking up cloud ID from %s: response had no cloudId", tenantInfoPath)
-			return
-		}
-		c.cloudIDValue = info.CloudID
-	})
+	c.cloudIDMu.Lock()
+	defer c.cloudIDMu.Unlock()
 
-	if c.cloudIDErr != nil {
-		return "", c.cloudIDErr
+	if c.cloudIDValue != "" {
+		return c.cloudIDValue, nil
 	}
+
+	var info tenantInfoResponse
+	if err := c.Get(ctx, tenantInfoPath, &info); err != nil {
+		return "", fmt.Errorf("looking up cloud ID from %s: %w", tenantInfoPath, err)
+	}
+	if info.CloudID == "" {
+		return "", fmt.Errorf("looking up cloud ID from %s: response had no cloudId", tenantInfoPath)
+	}
+
+	c.cloudIDValue = info.CloudID
 	return c.cloudIDValue, nil
 }
 
@@ -197,11 +215,19 @@ func PathEscape(s string) string {
 // newRequest creates a new HTTP request with authentication and standard
 // headers. If path is already an absolute URL (http:// or https://), it is
 // used as-is instead of being appended to baseURL — this lets callers reach
-// hosts other than the configured Atlassian site (e.g. the Automation API)
-// while still getting Basic auth and the standard headers.
+// hosts other than the configured Atlassian site (e.g. the Automation API).
+// An absolute URL is only allowed when its scheme+host matches the
+// configured site (baseURL) or the configured AutomationBase; anything else
+// is rejected here, before Basic auth is attached or any network call is
+// made.
 func (c *Client) newRequest(ctx context.Context, method, path string, body *bytes.Reader) (*http.Request, error) {
 	u := path
-	if !strings.HasPrefix(path, "http://") && !strings.HasPrefix(path, "https://") {
+	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
+		origin := originOf(path)
+		if origin == "" || (origin != c.baseOrigin && origin != c.automationOrigin) {
+			return nil, fmt.Errorf("refusing to send request to disallowed absolute URL %q: host must match the configured site (%s) or Automation API (%s)", path, c.baseOrigin, c.automationOrigin)
+		}
+	} else {
 		u = c.baseURL + path
 	}
 
