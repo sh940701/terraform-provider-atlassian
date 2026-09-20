@@ -1,7 +1,8 @@
-package jira_test
+package jira
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -73,13 +74,21 @@ func sweepAutomationRules(_ string) error {
 func TestIntegrationAutomationRuleResource_basic(t *testing.T) {
 	testutil.SkipIfNoAcc(t)
 
+	// Real-site fixture ids. Skip rather than 400 if any is missing.
+	//   ATLASSIAN_TEST_PROJECT_ID     — project the rule is scoped to
+	//   ATLASSIAN_TEST_STATUS_ID      — transitioned-to status in the trigger
+	//   ATLASSIAN_TEST_ISSUE_TYPE_ID  — issuetype condition operand (not a project id)
 	projectID := os.Getenv("ATLASSIAN_TEST_PROJECT_ID")
 	statusID := os.Getenv("ATLASSIAN_TEST_STATUS_ID")
+	issueTypeID := os.Getenv("ATLASSIAN_TEST_ISSUE_TYPE_ID")
 	if projectID == "" {
 		t.Skip("ATLASSIAN_TEST_PROJECT_ID not set")
 	}
 	if statusID == "" {
 		t.Skip("ATLASSIAN_TEST_STATUS_ID not set")
+	}
+	if issueTypeID == "" {
+		t.Skip("ATLASSIAN_TEST_ISSUE_TYPE_ID not set")
 	}
 
 	rName := acctest.RandomWithPrefix("tf-acc-test")
@@ -113,7 +122,9 @@ func TestIntegrationAutomationRuleResource_basic(t *testing.T) {
         }
       }
     ]
-  })`, statusID, projectID)
+  })`, statusID, issueTypeID)
+
+	expectedBodyJSON := fmt.Sprintf(`{"trigger":{"type":"jira.issue.event.trigger:transitioned","value":{"toStatus":[{"type":"ID","value":%q}]}},"components":[{"type":"jira.issue.condition","value":{"operand":{"type":"ID","value":%q},"operator":{"value":"="},"field":{"value":"issuetype"}}}]}`, statusID, issueTypeID)
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testutil.ProtoV6ProviderFactories,
@@ -137,9 +148,31 @@ resource "atlassian_jira_automation_rule" "test" {
 				),
 			},
 			{
-				ResourceName:      "atlassian_jira_automation_rule.test",
-				ImportState:       true,
-				ImportStateVerify: true,
+				ResourceName:            "atlassian_jira_automation_rule.test",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"body"},
+				ImportStateCheck: func(states []*terraform.InstanceState) error {
+					if len(states) != 1 {
+						return fmt.Errorf("expected 1 imported instance state, got %d", len(states))
+					}
+					got := states[0].Attributes["body"]
+					if got == "" {
+						return fmt.Errorf("imported body is empty")
+					}
+					var parsed interface{}
+					if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+						return fmt.Errorf("imported body is not JSON: %w", err)
+					}
+					equal, err := bodyEqual(got, expectedBodyJSON)
+					if err != nil {
+						return fmt.Errorf("comparing imported body: %w", err)
+					}
+					if !equal {
+						return fmt.Errorf("imported body does not match expected trigger/components: got %s", got)
+					}
+					return nil
+				},
 			},
 			{
 				Config: fmt.Sprintf(`
