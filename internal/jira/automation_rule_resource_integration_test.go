@@ -1,4 +1,4 @@
-package jira
+package jira_test
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/lbajsarowicz/terraform-provider-atlassian/internal/atlassian"
+	"github.com/lbajsarowicz/terraform-provider-atlassian/internal/jira"
 	"github.com/lbajsarowicz/terraform-provider-atlassian/internal/testutil"
 )
 
@@ -31,7 +33,7 @@ func sweepAutomationRules(_ string) error {
 
 	ctx := context.Background()
 
-	summaries, err := listAutomationRuleSummaries(ctx, client)
+	summaries, err := jira.ListAutomationRuleSummaries(ctx, client)
 	if err != nil {
 		return fmt.Errorf("listing automation rules for sweep: %w", err)
 	}
@@ -40,7 +42,7 @@ func sweepAutomationRules(_ string) error {
 		if !strings.HasPrefix(rule.Name, "tf-acc-test-") {
 			continue
 		}
-		if err := deleteAutomationRule(ctx, client, rule.UUID); err != nil {
+		if err := jira.DeleteAutomationRule(ctx, client, rule.UUID); err != nil {
 			fmt.Printf("[WARN] Failed to delete automation rule %q (%s): %s\n", rule.Name, rule.UUID, err)
 		}
 	}
@@ -137,15 +139,17 @@ resource "atlassian_jira_automation_rule" "test" {
 					if got == "" {
 						return fmt.Errorf("imported body is empty")
 					}
-					var parsed interface{}
-					if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+					var gotBody, wantBody interface{}
+					if err := json.Unmarshal([]byte(got), &gotBody); err != nil {
 						return fmt.Errorf("imported body is not JSON: %w", err)
 					}
-					equal, err := bodyEqual(got, expectedBodyJSON)
-					if err != nil {
-						return fmt.Errorf("comparing imported body: %w", err)
+					if err := json.Unmarshal([]byte(expectedBodyJSON), &wantBody); err != nil {
+						return fmt.Errorf("expected body is not JSON: %w", err)
 					}
-					if !equal {
+					// Server re-serializes body on import; strip the keys
+					// normalizeBody ignores so this is JSON equality of
+					// trigger/components, not string equality of the stored body.
+					if !reflect.DeepEqual(stripServerNoise(gotBody), stripServerNoise(wantBody)) {
 						return fmt.Errorf("imported body does not match expected trigger/components: got %s", got)
 					}
 					return nil
@@ -168,6 +172,36 @@ resource "atlassian_jira_automation_rule" "test" {
 			},
 		},
 	})
+}
+
+// stripServerNoise drops the keys the Automation API adds on echo
+// (id, schemaVersion, empty conditions/children) so ImportStateCheck can
+// compare trigger/components as JSON rather than as stored strings.
+func stripServerNoise(v interface{}) interface{} {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(val))
+		for k, child := range val {
+			if k == "id" || k == "schemaVersion" {
+				continue
+			}
+			if k == "conditions" || k == "children" {
+				if arr, ok := child.([]interface{}); ok && len(arr) == 0 {
+					continue
+				}
+			}
+			out[k] = stripServerNoise(child)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(val))
+		for i, child := range val {
+			out[i] = stripServerNoise(child)
+		}
+		return out
+	default:
+		return val
+	}
 }
 
 func testCheckAutomationRuleDestroyed(s *terraform.State) error {

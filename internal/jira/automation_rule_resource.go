@@ -236,25 +236,25 @@ func (r *automationRuleResource) putRuleState(ctx context.Context, uuid, state s
 	return putRuleState(ctx, r.client, uuid, state)
 }
 
-// ruleSummary is one row of GET /rule/summary (S1 spike: {uuid, name, state, ...}).
-type ruleSummary struct {
+// RuleSummary is one row of GET /rule/summary (S1 spike: {uuid, name, state, ...}).
+type RuleSummary struct {
 	UUID  string `json:"uuid"`
 	Name  string `json:"name"`
 	State string `json:"state"`
 }
 
-// listAutomationRuleSummaries pages GET /rule/summary.
+// ListAutomationRuleSummaries pages GET /rule/summary.
 // Envelope is {"data": [...], "links": {"next": ...}} — observed on a real
 // site (S1). A 200 whose envelope has no "data" key is an error, not an
 // empty list: that used to let a guessed GET /rules shape silently skip
 // leftover tf-acc-test-* rules.
-func listAutomationRuleSummaries(ctx context.Context, client *atlassian.Client) ([]ruleSummary, error) {
+func ListAutomationRuleSummaries(ctx context.Context, client *atlassian.Client) ([]RuleSummary, error) {
 	path, err := client.AutomationURL(ctx, "/rule/summary")
 	if err != nil {
 		return nil, fmt.Errorf("building automation rule summary URL: %w", err)
 	}
 
-	var all []ruleSummary
+	var all []RuleSummary
 	for page := 0; page < atlassian.MaxPages; page++ {
 		var envelope map[string]json.RawMessage
 		if err := client.Get(ctx, path, &envelope); err != nil {
@@ -264,7 +264,7 @@ func listAutomationRuleSummaries(ctx context.Context, client *atlassian.Client) 
 		if !ok {
 			return nil, fmt.Errorf("GET /rule/summary: response missing data key")
 		}
-		var summaries []ruleSummary
+		var summaries []RuleSummary
 		if err := json.Unmarshal(data, &summaries); err != nil {
 			return nil, fmt.Errorf("GET /rule/summary: decoding data: %w", err)
 		}
@@ -288,9 +288,9 @@ func listAutomationRuleSummaries(ctx context.Context, client *atlassian.Client) 
 	return nil, fmt.Errorf("listing automation rule summaries: exceeded %d pages", atlassian.MaxPages)
 }
 
-// deleteAutomationRule disables then deletes, matching the resource Delete
+// DeleteAutomationRule disables then deletes, matching the resource Delete
 // sequence. A 404 on either step is treated as already gone.
-func deleteAutomationRule(ctx context.Context, client *atlassian.Client, uuid string) error {
+func DeleteAutomationRule(ctx context.Context, client *atlassian.Client, uuid string) error {
 	disableStatus, err := putRuleState(ctx, client, uuid, ruleStateDisabled)
 	if err != nil && disableStatus != http.StatusNotFound {
 		return fmt.Errorf("disabling before delete: %w", err)
@@ -557,7 +557,7 @@ func (r *automationRuleResource) Delete(ctx context.Context, req resource.Delete
 
 	uuid := state.UUID.ValueString()
 
-	if err := deleteAutomationRule(ctx, r.client, uuid); err != nil {
+	if err := DeleteAutomationRule(ctx, r.client, uuid); err != nil {
 		resp.Diagnostics.AddError("Error deleting automation rule", err.Error())
 		return
 	}

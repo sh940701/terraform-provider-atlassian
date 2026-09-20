@@ -45,7 +45,7 @@ func TestListAutomationRuleSummariesPagesAndRequiresData(t *testing.T) {
 		t.Fatalf("NewClient: %s", err)
 	}
 
-	got, err := listAutomationRuleSummaries(context.Background(), client)
+	got, err := ListAutomationRuleSummaries(context.Background(), client)
 	if err != nil {
 		t.Fatalf("listAutomationRuleSummaries: %s", err)
 	}
@@ -76,7 +76,7 @@ func TestListAutomationRuleSummariesErrorsWithoutDataKey(t *testing.T) {
 		t.Fatalf("NewClient: %s", err)
 	}
 
-	_, err = listAutomationRuleSummaries(context.Background(), client)
+	_, err = ListAutomationRuleSummaries(context.Background(), client)
 	if err == nil || !strings.Contains(err.Error(), "missing data key") {
 		t.Fatalf("expected missing data key error, got %v", err)
 	}
