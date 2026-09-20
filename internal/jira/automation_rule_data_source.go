@@ -146,14 +146,8 @@ func (d *automationRuleDataSource) Read(ctx context.Context, req datasource.Read
 		)
 		return
 	}
-
-	if statusCode != 200 {
-		resp.Diagnostics.AddError(
-			"Unexpected status code",
-			fmt.Sprintf("Expected 200, got %d", statusCode),
-		)
-		return
-	}
+	// GetWithStatus only returns (code, nil) for 200 and 404; any other
+	// status is already in err above (and includes the response body).
 
 	// Extract project IDs from the rule's scope ARIs
 	projectIDs := projectIDsFromARIs(apiResp.RuleScopeARIs)
