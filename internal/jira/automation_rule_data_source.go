@@ -78,7 +78,9 @@ func (d *automationRuleDataSource) Schema(_ context.Context, _ datasource.Schema
 			},
 			"body": schema.StringAttribute{
 				Description: `The rule's trigger and components as a JSON object: {"trigger": {...}, "components": [...]}. ` +
-					"Opaque field carrying the rule's automation component graph.",
+					"The server's serialization with sorted object keys, returned as a plain string. " +
+					"This data source does not apply semantic equality (unlike the resource's body attribute), " +
+					"so whitespace and key order changes are treated as modifications.",
 				Computed: true,
 			},
 			"actor_account_id": schema.StringAttribute{

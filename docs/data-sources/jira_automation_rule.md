@@ -27,7 +27,7 @@ data "atlassian_jira_automation_rule" "example" {
 ### Read-Only
 
 - `actor_account_id` (String) Account id the rule's actions run as. Empty if the rule runs as Jira's default.
-- `body` (String) The rule's trigger and components as a JSON object: {"trigger": {...}, "components": [...]}. Opaque field carrying the rule's automation component graph.
+- `body` (String) The rule's trigger and components as a JSON object: {"trigger": {...}, "components": [...]}. The server's serialization with sorted object keys, returned as a plain string. This data source does not apply semantic equality (unlike the resource's body attribute), so whitespace and key order changes are treated as modifications.
 - `can_other_rule_trigger` (Boolean) Whether this rule's actions are allowed to trigger other automation rules.
 - `description` (String) The rule's description.
 - `extra_scope_aris` (List of String) Non-project scope ARIs the server has recorded for this rule (e.g. a board or filter scope) that `project_ids` does not model.
