@@ -50,7 +50,7 @@ resource "atlassian_jira_automation_rule" "ops_ticket_watcher" {
 - `can_other_rule_trigger` (Boolean) Whether this rule's actions are allowed to trigger other automation rules. Defaults to `false`.
 - `description` (String) The rule's description.
 - `notify_on_error` (String) When to notify the rule's actor on error. The set of valid values is unverified against a real site, so this is a free-form string rather than a validated enum. Defaults to `FIRSTERROR`.
-- `state` (String) Whether the rule is enabled. One of `ENABLED`, `DISABLED`.
+- `state` (String) Whether the rule is enabled. One of `ENABLED`, `DISABLED`. Defaults to `ENABLED`.
 
 ### Read-Only
 

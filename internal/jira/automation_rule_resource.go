@@ -94,7 +94,7 @@ func (r *automationRuleResource) Schema(_ context.Context, _ resource.SchemaRequ
 				Default:     stringdefault.StaticString(""),
 			},
 			"state": schema.StringAttribute{
-				Description: "Whether the rule is enabled. One of `ENABLED`, `DISABLED`.",
+				Description: "Whether the rule is enabled. One of `ENABLED`, `DISABLED`. Defaults to `ENABLED`.",
 				Optional:    true,
 				Computed:    true,
 				Default:     stringdefault.StaticString(ruleStateEnabled),
