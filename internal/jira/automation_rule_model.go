@@ -99,8 +99,11 @@ func docFromBody(body string) (trigger, components json.RawMessage, err error) {
 }
 
 // projectScopeARIPattern matches the ARI shape for a rule scoped to one
-// project: ari:cloud:jira:{cloudId}:project/{projectId}.
-var projectScopeARIPattern = regexp.MustCompile(`^ari:cloud:jira:[^:]+:project/(.+)$`)
+// project: ari:cloud:jira:{cloudId}:project/{projectId}. The project id
+// segment excludes "/" so a trailing extra segment
+// (ari:cloud:jira:abc:project/10549/extra) is rejected rather than
+// swallowed into the id.
+var projectScopeARIPattern = regexp.MustCompile(`^ari:cloud:jira:[^:]+:project/([^/]+)$`)
 
 // ariFromProjectID builds the project-scope ARI for projectID under cloudID.
 func ariFromProjectID(cloudID, projectID string) string {

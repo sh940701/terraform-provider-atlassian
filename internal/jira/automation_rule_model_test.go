@@ -21,6 +21,12 @@ func TestProjectIDFromARIRejectsOtherScopes(t *testing.T) {
 	}
 }
 
+func TestProjectIDFromARIRejectsTrailingExtraSegment(t *testing.T) {
+	if id, ok := projectIDFromARI("ari:cloud:jira:abc:project/10549/extra"); ok {
+		t.Fatalf("expected an ARI with a trailing extra segment to be rejected, got (%q, true)", id)
+	}
+}
+
 func TestProjectIDsFromARIsSkipsNonProjectScopes(t *testing.T) {
 	got := projectIDsFromARIs([]string{
 		"ari:cloud:jira:abc:project/10549",

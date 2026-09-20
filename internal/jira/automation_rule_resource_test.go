@@ -26,11 +26,23 @@ type automationRuleMock struct {
 	cloudID       string
 	nextSeq       int
 	rules         map[string]map[string]interface{} // uuid -> stored rule document (as sent, plus "uuid")
+	posted        []map[string]interface{}          // raw POST bodies (rule object) in arrival order, un-augmented
 	omitUUIDOnGet bool                              // simulates a GET response that (contrary to what's normally observed) omits "uuid"
 }
 
 func newAutomationRuleMock() *automationRuleMock {
 	return &automationRuleMock{cloudID: "abc", nextSeq: 1, rules: map[string]map[string]interface{}{}}
+}
+
+// lastPosted returns the most recent raw POST body (the "rule" object exactly as
+// the provider sent it, before the mock adds "uuid"), or nil if none arrived.
+func (m *automationRuleMock) lastPosted() map[string]interface{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.posted) == 0 {
+		return nil
+	}
+	return m.posted[len(m.posted)-1]
 }
 
 func (m *automationRuleMock) handler() http.HandlerFunc {
@@ -61,6 +73,7 @@ func (m *automationRuleMock) handler() http.HandlerFunc {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
+			m.posted = append(m.posted, body.Rule)
 			uuid := fmt.Sprintf("rule-uuid-%d", m.nextSeq)
 			m.nextSeq++
 			doc := make(map[string]interface{}, len(body.Rule)+1)
@@ -203,6 +216,16 @@ func TestAccAutomationRuleResource_basic(t *testing.T) {
 						aris, _ := doc["ruleScopeARIs"].([]interface{})
 						if len(aris) != 1 || aris[0] != "ari:cloud:jira:abc:project/10549" {
 							return fmt.Errorf("unexpected ruleScopeARIs sent: %v", doc["ruleScopeARIs"])
+						}
+						raw := mock.lastPosted()
+						if raw == nil {
+							return fmt.Errorf("mock recorded no POST body")
+						}
+						if v, ok := raw["uuid"]; ok {
+							return fmt.Errorf("uuid must not be sent on create, got %v", v)
+						}
+						if v, ok := raw["actor"]; ok {
+							return fmt.Errorf("actor must not be sent when actor_account_id is unset, got %v", v)
 						}
 						if !jsonEquivalent(doc["trigger"], map[string]interface{}{
 							"component": "TRIGGER",
