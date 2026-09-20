@@ -279,14 +279,17 @@ func (m *automationRuleMock) handler() http.HandlerFunc {
 }
 
 // injectAutomationRuleNoise returns a copy of doc with server-added noise on
-// trigger/components: an "id" and "schemaVersion" on trigger, and an "id",
-// "schemaVersion", and empty "conditions" on every component — the kind of
-// echo normalizeBody is meant to see through.
+// the rule itself and on trigger/components: an "id" and "schemaVersion" at
+// the top level and on trigger, and an "id", "schemaVersion", and empty
+// "conditions" on every component — the kind of echo normalizeBody is meant
+// to see through.
 func injectAutomationRuleNoise(doc map[string]interface{}) map[string]interface{} {
-	out := make(map[string]interface{}, len(doc))
+	out := make(map[string]interface{}, len(doc)+2)
 	for k, v := range doc {
 		out[k] = v
 	}
+	out["id"] = "rule-server-id"
+	out["schemaVersion"] = 1
 	if trigger, ok := out["trigger"].(map[string]interface{}); ok {
 		t2 := make(map[string]interface{}, len(trigger)+2)
 		for k, v := range trigger {
