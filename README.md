@@ -24,7 +24,7 @@ terraform {
   required_providers {
     atlassian = {
       source  = "bmp-cloud/atlassian"
-      version = "~> 0.1"
+      version = "~> 0.3"
     }
   }
 }
@@ -39,6 +39,8 @@ terraform {
 | `url`     | `ATLASSIAN_URL`     | Atlassian Cloud instance URL (e.g., `https://mysite.atlassian.net`) |
 | `user`    | `ATLASSIAN_USER`    | Account email for API authentication |
 | `token`   | `ATLASSIAN_TOKEN`   | [API token](https://id.atlassian.com/manage-profile/security/api-tokens) |
+| `cloud_id` | | Atlassian Cloud ID; looked up from `/_edge/tenant_info` when unset. |
+| `automation_base_url` | | Automation API base; defaults to `https://api.atlassian.com/automation/public/jira`. |
 
 Provider configuration takes precedence over environment variables.
 
