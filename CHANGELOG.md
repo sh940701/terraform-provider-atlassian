@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.0] (unreleased)
+
+
+### Features
+
+* add atlassian_jira_automation_rule resource and data source ([automation rule management API](https://api.atlassian.com/automation/public/jira)) — opaque JSON body with server-key-insensitive comparison, project_ids Set, extra_scope_aris, notify_on_error, can_other_rule_trigger, and Import by uuid
+* add provider attributes `cloud_id` and `automation_base_url` for Automation Rule Management API integration
+* add client methods for cloud ID lookup and absolute-URL allowlist for Automation API
+
 ## [0.1.2](https://github.com/lbajsarowicz/terraform-provider-atlassian/compare/v0.1.1...v0.1.2) (2026-04-04)
 
 

@@ -133,7 +133,9 @@ func testCheckConfluenceSpacePermissionDestroyed(s *terraform.State) error {
 
 		// Check space also destroyed
 		spaceAPIPath := fmt.Sprintf("/wiki/api/v2/spaces/%s", atlassian.PathEscape(spaceID))
-		var spaceResult struct{ ID string `json:"id"` }
+		var spaceResult struct {
+			ID string `json:"id"`
+		}
 		statusCode, _ := client.GetWithStatus(ctx, spaceAPIPath, &spaceResult)
 		if statusCode == 200 {
 			spaceKey := rs.Primary.Attributes["space_key"]
@@ -142,4 +144,3 @@ func testCheckConfluenceSpacePermissionDestroyed(s *terraform.State) error {
 	}
 	return nil
 }
-

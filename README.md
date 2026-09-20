@@ -75,6 +75,7 @@ data "atlassian_jira_project" "existing" {
 
 | Resource | Description |
 |----------|-------------|
+| `atlassian_jira_automation_rule` | Jira automation rule (Automation Rule Management API) |
 | `atlassian_jira_group` | Jira group |
 | `atlassian_jira_project` | Jira project |
 | `atlassian_jira_permission_scheme` | Permission scheme |
@@ -103,6 +104,7 @@ data "atlassian_jira_project" "existing" {
 
 | Data Source | Description |
 |-------------|-------------|
+| `atlassian_jira_automation_rule` | Look up a Jira automation rule by UUID |
 | `atlassian_jira_group` | Look up a Jira group by name |
 | `atlassian_jira_project` | Look up a Jira project by key |
 | `atlassian_jira_permission_scheme` | Look up a permission scheme by name |
