@@ -2,12 +2,12 @@
 page_title: "atlassian_jira_automation_rule Resource"
 subcategory: ""
 description: |-
-    Manages a Jira Cloud automation rule via the Automation Rule Management API (https://api.atlassian.com/automation/public/jira). body carries the rule's trigger and components as an opaque JSON object — this resource does not model automation's component graph, only the rule's identity, scope, and enabled state. Update and import are not yet supported.
+    Manages a Jira Cloud automation rule via the Automation Rule Management API (https://api.atlassian.com/automation/public/jira). body carries the rule's trigger and components as an opaque JSON object — this resource does not model automation's component graph, only the rule's identity, scope, and enabled state. Import by the rule's uuid.
 ---
 
 # atlassian_jira_automation_rule (Resource)
 
-Manages a Jira Cloud automation rule via the Automation Rule Management API (https://api.atlassian.com/automation/public/jira). `body` carries the rule's trigger and components as an opaque JSON object — this resource does not model automation's component graph, only the rule's identity, scope, and enabled state. Update and import are not yet supported.
+Manages a Jira Cloud automation rule via the Automation Rule Management API (https://api.atlassian.com/automation/public/jira). `body` carries the rule's trigger and components as an opaque JSON object — this resource does not model automation's component graph, only the rule's identity, scope, and enabled state. Import by the rule's `uuid`.
 
 ## Example Usage
 
@@ -40,17 +40,20 @@ resource "atlassian_jira_automation_rule" "ops_ticket_watcher" {
 
 ### Required
 
-- `body` (String) The rule's trigger and components as a JSON object: {"trigger": {...}, "components": [...]}. Opaque to this resource — whitespace and key-order differences are not drift.
+- `body` (String) The rule's trigger and components as a JSON object: {"trigger": {...}, "components": [...]}. Opaque to this resource — whitespace, key-order, and server-added `id`/`schemaVersion`/empty `conditions`/`children` differences are not drift.
 - `name` (String) The rule's name.
-- `project_ids` (List of String) Project ids the rule is scoped to. Translated to `ruleScopeARIs` (`ari:cloud:jira:{cloudId}:project/{projectId}`) on write.
+- `project_ids` (Set of String) Project ids the rule is scoped to. Translated to `ruleScopeARIs` (`ari:cloud:jira:{cloudId}:project/{projectId}`) on write. Order does not matter.
 
 ### Optional
 
 - `actor_account_id` (String) Account id the rule's actions run as. Left unset, Jira assigns its own default (typically the rule's author).
+- `can_other_rule_trigger` (Boolean) Whether this rule's actions are allowed to trigger other automation rules. Defaults to `false`.
 - `description` (String) The rule's description.
+- `notify_on_error` (String) When to notify the rule's actor on error. The set of valid values is unverified against a real site, so this is a free-form string rather than a validated enum. Defaults to `FIRSTERROR`.
 - `state` (String) Whether the rule is enabled. One of `ENABLED`, `DISABLED`.
 
 ### Read-Only
 
+- `extra_scope_aris` (List of String) Non-project scope ARIs the server has recorded for this rule (e.g. a board or filter scope) that `project_ids` does not model — read-only, and carried through unchanged whenever `project_ids` is updated.
 - `id` (String) The rule's UUID (same value as `uuid`).
 - `uuid` (String) The rule's UUID, assigned by Jira on creation.

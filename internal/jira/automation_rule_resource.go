@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -17,7 +19,10 @@ import (
 	"github.com/lbajsarowicz/terraform-provider-atlassian/internal/atlassian"
 )
 
-var _ resource.Resource = &automationRuleResource{}
+var (
+	_ resource.Resource                = &automationRuleResource{}
+	_ resource.ResourceWithImportState = &automationRuleResource{}
+)
 
 // NewAutomationRuleResource returns a new Jira automation rule resource.
 func NewAutomationRuleResource() resource.Resource {
@@ -29,19 +34,27 @@ type automationRuleResource struct {
 }
 
 type automationRuleResourceModel struct {
-	ID             types.String         `tfsdk:"id"`
-	UUID           types.String         `tfsdk:"uuid"`
-	Name           types.String         `tfsdk:"name"`
-	Description    types.String         `tfsdk:"description"`
-	State          types.String         `tfsdk:"state"`
-	ProjectIDs     types.List           `tfsdk:"project_ids"`
-	Body           jsontypes.Normalized `tfsdk:"body"`
-	ActorAccountID types.String         `tfsdk:"actor_account_id"`
+	ID                  types.String  `tfsdk:"id"`
+	UUID                types.String  `tfsdk:"uuid"`
+	Name                types.String  `tfsdk:"name"`
+	Description         types.String  `tfsdk:"description"`
+	State               types.String  `tfsdk:"state"`
+	ProjectIDs          types.Set     `tfsdk:"project_ids"`
+	ExtraScopeARIs      types.List    `tfsdk:"extra_scope_aris"`
+	Body                RuleBodyValue `tfsdk:"body"`
+	ActorAccountID      types.String  `tfsdk:"actor_account_id"`
+	CanOtherRuleTrigger types.Bool    `tfsdk:"can_other_rule_trigger"`
+	NotifyOnError       types.String  `tfsdk:"notify_on_error"`
 }
 
 const (
 	ruleStateEnabled  = "ENABLED"
 	ruleStateDisabled = "DISABLED"
+
+	// ruleNotifyOnErrorDefault is the schema default for notify_on_error.
+	// The set of valid values is unverified against a real site (T5/T6),
+	// so this is kept as a free-form string rather than a validated enum.
+	ruleNotifyOnErrorDefault = "FIRSTERROR"
 )
 
 func (r *automationRuleResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -53,7 +66,7 @@ func (r *automationRuleResource) Schema(_ context.Context, _ resource.SchemaRequ
 		Description: "Manages a Jira Cloud automation rule via the Automation Rule Management API " +
 			"(https://api.atlassian.com/automation/public/jira). `body` carries the rule's trigger and " +
 			"components as an opaque JSON object — this resource does not model automation's component graph, " +
-			"only the rule's identity, scope, and enabled state. Update and import are not yet supported.",
+			"only the rule's identity, scope, and enabled state. Import by the rule's `uuid`.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Description: "The rule's UUID (same value as `uuid`).",
@@ -88,17 +101,28 @@ func (r *automationRuleResource) Schema(_ context.Context, _ resource.SchemaRequ
 					stringvalidator.OneOf(ruleStateEnabled, ruleStateDisabled),
 				},
 			},
-			"project_ids": schema.ListAttribute{
+			"project_ids": schema.SetAttribute{
 				Description: "Project ids the rule is scoped to. Translated to `ruleScopeARIs` " +
-					"(`ari:cloud:jira:{cloudId}:project/{projectId}`) on write.",
+					"(`ari:cloud:jira:{cloudId}:project/{projectId}`) on write. Order does not matter.",
 				Required:    true,
 				ElementType: types.StringType,
 			},
+			"extra_scope_aris": schema.ListAttribute{
+				Description: "Non-project scope ARIs the server has recorded for this rule (e.g. a board " +
+					"or filter scope) that `project_ids` does not model — read-only, and carried through " +
+					"unchanged whenever `project_ids` is updated.",
+				Computed:    true,
+				ElementType: types.StringType,
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.UseStateForUnknown(),
+				},
+			},
 			"body": schema.StringAttribute{
 				Description: `The rule's trigger and components as a JSON object: {"trigger": {...}, "components": [...]}. ` +
-					"Opaque to this resource — whitespace and key-order differences are not drift.",
+					"Opaque to this resource — whitespace, key-order, and server-added `id`/`schemaVersion`/empty " +
+					"`conditions`/`children` differences are not drift.",
 				Required:   true,
-				CustomType: jsontypes.NormalizedType{},
+				CustomType: RuleBodyType{},
 			},
 			"actor_account_id": schema.StringAttribute{
 				Description: "Account id the rule's actions run as. Left unset, Jira assigns its own " +
@@ -111,6 +135,21 @@ func (r *automationRuleResource) Schema(_ context.Context, _ resource.SchemaRequ
 					// to) even though nothing about it changed.
 					stringplanmodifier.UseStateForUnknown(),
 				},
+			},
+			"can_other_rule_trigger": schema.BoolAttribute{
+				Description: "Whether this rule's actions are allowed to trigger other automation rules. " +
+					"Defaults to `false`.",
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+			},
+			"notify_on_error": schema.StringAttribute{
+				Description: "When to notify the rule's actor on error. The set of valid values is " +
+					"unverified against a real site, so this is a free-form string rather than a validated " +
+					"enum. Defaults to `FIRSTERROR`.",
+				Optional: true,
+				Computed: true,
+				Default:  stringdefault.StaticString(ruleNotifyOnErrorDefault),
 			},
 		},
 	}
@@ -148,6 +187,49 @@ type createRuleResponse struct {
 	Rule *ruleDoc `json:"rule,omitempty"`
 }
 
+// updateRuleRequest is the PUT /rule/{uuid} request body — mirrors
+// createRuleRequest's {"rule": ruleDoc} wrapping since Update and Create
+// otherwise share the same document shape (see ruleDoc's doc comment: this
+// wrapping is unconfirmed against a real site for Update specifically).
+type updateRuleRequest struct {
+	Rule ruleDoc `json:"rule"`
+}
+
+// ruleScopeRequest is the PUT /rule/{uuid}/rule-scope request body. The
+// exact payload key ("ruleScopeARIs") is unverified against a real site
+// (T6) — isolated here, and behind putRuleScope, so a follow-up task can
+// adjust it in one place.
+type ruleScopeRequest struct {
+	RuleScopeARIs []string `json:"ruleScopeARIs"`
+}
+
+// ruleStateRequest is the PUT /rule/{uuid}/state request body.
+type ruleStateRequest struct {
+	State string `json:"state"`
+}
+
+// putRuleScope calls PUT /rule/{uuid}/rule-scope with the full scope ARI
+// set (project ARIs + extra/opaque ARIs), returning the response status
+// code so callers can treat a 404 as "already gone" like elsewhere in this
+// resource.
+func (r *automationRuleResource) putRuleScope(ctx context.Context, uuid string, aris []string) (int, error) {
+	scopePath, err := r.client.AutomationURL(ctx, "/rule/"+atlassian.PathEscape(uuid)+"/rule-scope")
+	if err != nil {
+		return 0, fmt.Errorf("building Automation API URL: %w", err)
+	}
+	return r.client.PutWithStatus(ctx, scopePath, ruleScopeRequest{RuleScopeARIs: aris}, nil)
+}
+
+// putRuleState calls PUT /rule/{uuid}/state with the desired ENABLED/DISABLED
+// state, returning the response status code (see putRuleScope).
+func (r *automationRuleResource) putRuleState(ctx context.Context, uuid, state string) (int, error) {
+	statePath, err := r.client.AutomationURL(ctx, "/rule/"+atlassian.PathEscape(uuid)+"/state")
+	if err != nil {
+		return 0, fmt.Errorf("building Automation API URL: %w", err)
+	}
+	return r.client.PutWithStatus(ctx, statePath, ruleStateRequest{State: state}, nil)
+}
+
 func (r *automationRuleResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan automationRuleResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
@@ -167,8 +249,10 @@ func (r *automationRuleResource) Create(ctx context.Context, req resource.Create
 		return
 	}
 
+	// A brand new rule has no server-recorded non-project scopes yet.
 	doc, err := docFromRule(cloudID, plan.Name.ValueString(), plan.Description.ValueString(), plan.State.ValueString(),
-		projectIDs, plan.Body.ValueString(), plan.ActorAccountID.ValueString())
+		projectIDs, nil, plan.Body.ValueString(), plan.ActorAccountID.ValueString(),
+		plan.CanOtherRuleTrigger.ValueBool(), plan.NotifyOnError.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating automation rule", err.Error())
 		return
@@ -197,7 +281,10 @@ func (r *automationRuleResource) Create(ctx context.Context, req resource.Create
 
 	// Server-generated: uuid/id. Everything else is preserved from the plan
 	// (user intent) rather than re-read from the response, whose shape is
-	// unconfirmed beyond uuid.
+	// unconfirmed beyond uuid — except ruleScopeARIs, checked below in both
+	// possible response shapes, since Jira may add a scope of its own on
+	// create (e.g. one auto-derived from the actor) that this resource
+	// would otherwise never learn about until the next Read.
 	plan.UUID = types.StringValue(uuid)
 	plan.ID = types.StringValue(uuid)
 	if plan.ActorAccountID.IsNull() || plan.ActorAccountID.IsUnknown() {
@@ -206,6 +293,24 @@ func (r *automationRuleResource) Create(ctx context.Context, req resource.Create
 		// matches and no drift shows up. See ruleActor's doc comment.
 		plan.ActorAccountID = types.StringValue("")
 	}
+
+	responseScopeARIs := result.RuleScopeARIs
+	if len(responseScopeARIs) == 0 && result.Rule != nil {
+		responseScopeARIs = result.Rule.RuleScopeARIs
+	}
+	if len(responseScopeARIs) == 0 {
+		// The response carried no scope info either way — fall back to what
+		// was actually sent, which has no extras (a brand new rule can only
+		// have been given project scopes at this point).
+		responseScopeARIs = doc.RuleScopeARIs
+	}
+
+	extraScopeARIs, diags := types.ListValueFrom(ctx, types.StringType, extraScopeARIsFromARIs(responseScopeARIs))
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	plan.ExtraScopeARIs = extraScopeARIs
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -234,13 +339,29 @@ func (r *automationRuleResource) Read(ctx context.Context, req resource.ReadRequ
 		return
 	}
 
-	body, err := bodyFromDoc(doc)
+	newBody, err := bodyFromDoc(doc)
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading automation rule", err.Error())
 		return
 	}
 
-	projectIDs, diags := types.ListValueFrom(ctx, types.StringType, projectIDsFromARIs(doc.RuleScopeARIs))
+	oldBody := ""
+	if !state.Body.IsNull() && !state.Body.IsUnknown() {
+		oldBody = state.Body.ValueString()
+	}
+	bodyToStore, err := bodyForState(oldBody, newBody)
+	if err != nil {
+		resp.Diagnostics.AddError("Error reading automation rule", fmt.Sprintf("comparing rule body: %s", err))
+		return
+	}
+
+	projectIDs, diags := types.SetValueFrom(ctx, types.StringType, projectIDsFromARIs(doc.RuleScopeARIs))
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	extraScopeARIs, diags := types.ListValueFrom(ctx, types.StringType, extraScopeARIsFromARIs(doc.RuleScopeARIs))
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -250,8 +371,11 @@ func (r *automationRuleResource) Read(ctx context.Context, req resource.ReadRequ
 	state.Description = types.StringValue(doc.Description)
 	state.State = types.StringValue(doc.State)
 	state.ProjectIDs = projectIDs
-	state.Body = jsontypes.NewNormalizedValue(body)
+	state.ExtraScopeARIs = extraScopeARIs
+	state.Body = NewRuleBodyValue(bodyToStore)
 	state.ActorAccountID = types.StringValue(doc.Actor.accountID())
+	state.CanOtherRuleTrigger = types.BoolValue(doc.CanOtherRuleTrigger)
+	state.NotifyOnError = types.StringValue(doc.NotifyOnError)
 	// doc.UUID is expected to echo the id we just requested by, but if a
 	// response ever omits it, keep the prior state's uuid/id rather than
 	// wiping the resource's identifier — losing it would make every
@@ -265,21 +389,87 @@ func (r *automationRuleResource) Read(ctx context.Context, req resource.ReadRequ
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-// Update exists only so automationRuleResource satisfies resource.Resource;
-// no attribute in this schema has RequiresReplace, so a change to any of
-// name/description/state/project_ids/body/actor_account_id plans an
-// in-place update and lands here. The Automation Rule Management API's
-// update semantics are unconfirmed (T5), so this stub fails the apply
-// instead of guessing — T6's acceptance criteria include replacing it with
-// a real implementation.
-func (r *automationRuleResource) Update(_ context.Context, _ resource.UpdateRequest, resp *resource.UpdateResponse) {
-	resp.Diagnostics.AddError(
-		"Update not yet supported",
-		"atlassian_jira_automation_rule does not support in-place updates yet. Destroy and recreate the rule "+
-			"to change it, or wait for update support to land in a follow-up release.",
-	)
+// Update always sends the full rule document to PUT /rule/{uuid} (per
+// ruleDoc/updateRuleRequest — no attribute in this schema has
+// RequiresReplace, so any change to name/description/state/project_ids/
+// body/actor_account_id/can_other_rule_trigger/notify_on_error lands here),
+// then additionally calls the dedicated rule-scope endpoint when
+// project_ids changed and the dedicated state endpoint when state changed —
+// per the Automation Rule Management API's split update surface (T6).
+func (r *automationRuleResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, state automationRuleResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	var projectIDs []string
+	resp.Diagnostics.Append(plan.ProjectIDs.ElementsAs(ctx, &projectIDs, false)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// extra_scope_aris is Computed+UseStateForUnknown (this resource never
+	// asks the user to write it), so the prior state's value is what a plain
+	// attribute update carries forward untouched.
+	var extraScopeARIs []string
+	resp.Diagnostics.Append(state.ExtraScopeARIs.ElementsAs(ctx, &extraScopeARIs, false)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	cloudID, err := r.client.CloudID(ctx)
+	if err != nil {
+		resp.Diagnostics.AddError("Error updating automation rule", fmt.Sprintf("looking up cloud ID: %s", err))
+		return
+	}
+
+	uuid := state.UUID.ValueString()
+
+	doc, err := docFromRule(cloudID, plan.Name.ValueString(), plan.Description.ValueString(), plan.State.ValueString(),
+		projectIDs, extraScopeARIs, plan.Body.ValueString(), plan.ActorAccountID.ValueString(),
+		plan.CanOtherRuleTrigger.ValueBool(), plan.NotifyOnError.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Error updating automation rule", err.Error())
+		return
+	}
+	doc.UUID = uuid
+
+	rulePath, err := r.client.AutomationURL(ctx, "/rule/"+atlassian.PathEscape(uuid))
+	if err != nil {
+		resp.Diagnostics.AddError("Error updating automation rule", fmt.Sprintf("building Automation API URL: %s", err))
+		return
+	}
+
+	if err := r.client.Put(ctx, rulePath, updateRuleRequest{Rule: doc}, nil); err != nil {
+		resp.Diagnostics.AddError("Error updating automation rule", err.Error())
+		return
+	}
+
+	// project_ids' Set semantics (order-insensitive Equal) mean this only
+	// fires on an actual scope change, never a reordering.
+	if !plan.ProjectIDs.Equal(state.ProjectIDs) {
+		if _, err := r.putRuleScope(ctx, uuid, doc.RuleScopeARIs); err != nil {
+			resp.Diagnostics.AddError("Error updating automation rule scope", err.Error())
+			return
+		}
+	}
+
+	if plan.State.ValueString() != state.State.ValueString() {
+		if _, err := r.putRuleState(ctx, uuid, plan.State.ValueString()); err != nil {
+			resp.Diagnostics.AddError("Error updating automation rule state", err.Error())
+			return
+		}
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
+// Delete disables the rule before deleting it — the Automation Rule
+// Management API only allows deleting a disabled rule — then deletes it.
+// A 404 on either step is treated as the rule already being gone rather
+// than an error.
 func (r *automationRuleResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var state automationRuleResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -287,7 +477,15 @@ func (r *automationRuleResource) Delete(ctx context.Context, req resource.Delete
 		return
 	}
 
-	rulePath, err := r.client.AutomationURL(ctx, "/rule/"+atlassian.PathEscape(state.UUID.ValueString()))
+	uuid := state.UUID.ValueString()
+
+	disableStatus, err := r.putRuleState(ctx, uuid, ruleStateDisabled)
+	if err != nil && disableStatus != http.StatusNotFound {
+		resp.Diagnostics.AddError("Error deleting automation rule", fmt.Sprintf("disabling before delete: %s", err))
+		return
+	}
+
+	rulePath, err := r.client.AutomationURL(ctx, "/rule/"+atlassian.PathEscape(uuid))
 	if err != nil {
 		resp.Diagnostics.AddError("Error deleting automation rule", fmt.Sprintf("building Automation API URL: %s", err))
 		return
@@ -301,4 +499,12 @@ func (r *automationRuleResource) Delete(ctx context.Context, req resource.Delete
 		resp.Diagnostics.AddError("Error deleting automation rule", err.Error())
 		return
 	}
+}
+
+// ImportState imports a rule by its uuid: `terraform import ... <uuid>`.
+// Both id and uuid are seeded from the import id (they're always equal —
+// see Create), and Read fills in everything else.
+func (r *automationRuleResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("uuid"), req.ID)...)
 }

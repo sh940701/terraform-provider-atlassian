@@ -1,9 +1,16 @@
 package jira
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"regexp"
+
+	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 )
 
 // Model layer for atlassian_jira_automation_rule: converts between the
@@ -12,29 +19,39 @@ import (
 // functions; the resource layer only moves values in and out of framework
 // types.
 //
-// `body` (a jsontypes.Normalized string) carries only the rule's trigger
-// and components — the parts of the automation component graph this
-// resource does not model. Everything else the API needs (scope, actor,
-// name/description/state) has its own attribute and is assembled into the
-// full ruleDoc by docFromRule.
+// `body` (a RuleBodyValue string, see below) carries only the rule's
+// trigger and components — the parts of the automation component graph
+// this resource does not model. Everything else the API needs (scope,
+// actor, name/description/state) has its own attribute and is assembled
+// into the full ruleDoc by docFromRule.
 
 // ruleDoc is the Automation Rule Management API document: the payload of
 // POST /rule (wrapped as {"rule": ruleDoc}) and the shape GET
 // /rule/{ruleUuid} returns at the top level (verified against a real site
 // for GET; the POST response shape is unconfirmed — see
-// automation_rule_resource.go's createRuleResponse).
+// automation_rule_resource.go's createRuleResponse). PUT /rule/{ruleUuid}
+// (Update) is assumed to accept the same shape, wrapped the same way as
+// Create (see updateRuleRequest) — unconfirmed against a real site (T6); a
+// follow-up task should verify.
 type ruleDoc struct {
-	Name                string          `json:"name"`
-	Description         string          `json:"description,omitempty"`
-	State               string          `json:"state"`
-	Trigger             json.RawMessage `json:"trigger"`
-	Components          json.RawMessage `json:"components"`
-	RuleScopeARIs       []string        `json:"ruleScopeARIs"`
-	Actor               *ruleActor      `json:"actor,omitempty"`
-	WriteAccessType     string          `json:"writeAccessType,omitempty"`
-	CanOtherRuleTrigger bool            `json:"canOtherRuleTrigger"`
-	NotifyOnError       string          `json:"notifyOnError,omitempty"`
-	UUID                string          `json:"uuid,omitempty"`
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	State       string          `json:"state"`
+	Trigger     json.RawMessage `json:"trigger"`
+	Components  json.RawMessage `json:"components"`
+	// RuleScopeARIs is set on write from the union of project_ids (as
+	// project ARIs) and extra_scope_aris (opaque, carried through
+	// unchanged) — see scopeARIsFromProjectIDs.
+	RuleScopeARIs []string   `json:"ruleScopeARIs"`
+	Actor         *ruleActor `json:"actor,omitempty"`
+	// WriteAccessType is intentionally never set (omitempty keeps it out
+	// of every request this resource sends) — whether the Automation Rule
+	// Management API requires it is unconfirmed (T5/T6); a follow-up task
+	// (S2) should confirm against a real site and wire it up here if so.
+	WriteAccessType     string `json:"writeAccessType,omitempty"`
+	CanOtherRuleTrigger bool   `json:"canOtherRuleTrigger"`
+	NotifyOnError       string `json:"notifyOnError,omitempty"`
+	UUID                string `json:"uuid,omitempty"`
 }
 
 // ruleActor names who a rule's actions run as. The exact JSON shape is
@@ -133,25 +150,291 @@ func projectIDsFromARIs(aris []string) []string {
 	return ids
 }
 
-// docFromRule assembles the create request document for a rule named name,
-// scoped to cloudID's projectIDs, with the given body (trigger+components)
-// and optional actor account id.
-func docFromRule(cloudID, name, description, state string, projectIDs []string, body string, actorAccountID string) (ruleDoc, error) {
+// extraScopeARIsFromARIs extracts the non-project-scope ARIs from
+// ruleScopeARIs, in order. These are scopes (e.g. a board or filter) that
+// project_ids does not model; this resource surfaces them read-only via the
+// extra_scope_aris attribute and carries them through unchanged on write
+// (see scopeARIsFromProjectIDs) rather than silently dropping them.
+func extraScopeARIsFromARIs(aris []string) []string {
+	extra := make([]string, 0, len(aris))
+	for _, ari := range aris {
+		if _, ok := projectIDFromARI(ari); !ok {
+			extra = append(extra, ari)
+		}
+	}
+	return extra
+}
+
+// scopeARIsFromProjectIDs builds the full ruleScopeARIs value to send on
+// write: project ARIs for projectIDs (under cloudID) followed by
+// extraScopeARIs unchanged.
+func scopeARIsFromProjectIDs(cloudID string, projectIDs, extraScopeARIs []string) []string {
+	aris := make([]string, 0, len(projectIDs)+len(extraScopeARIs))
+	for _, id := range projectIDs {
+		aris = append(aris, ariFromProjectID(cloudID, id))
+	}
+	aris = append(aris, extraScopeARIs...)
+	return aris
+}
+
+// docFromRule assembles the request document for a rule named name, scoped
+// to cloudID's projectIDs plus extraScopeARIs (opaque non-project scopes
+// carried through unchanged — pass nil on Create, where there are none
+// yet), with the given body (trigger+components), optional actor account
+// id, and the canOtherRuleTrigger/notifyOnError flags. Used for both Create
+// (POST /rule) and Update (PUT /rule/{uuid}) — Update additionally sets the
+// returned doc's UUID field itself, since docFromRule has no id to assign
+// on Create.
+func docFromRule(cloudID, name, description, state string, projectIDs, extraScopeARIs []string, body, actorAccountID string, canOtherRuleTrigger bool, notifyOnError string) (ruleDoc, error) {
 	trigger, components, err := docFromBody(body)
 	if err != nil {
 		return ruleDoc{}, err
 	}
-	aris := make([]string, 0, len(projectIDs))
-	for _, id := range projectIDs {
-		aris = append(aris, ariFromProjectID(cloudID, id))
-	}
 	return ruleDoc{
-		Name:          name,
-		Description:   description,
-		State:         state,
-		Trigger:       trigger,
-		Components:    components,
-		RuleScopeARIs: aris,
-		Actor:         actorFromAccountID(actorAccountID),
+		Name:                name,
+		Description:         description,
+		State:               state,
+		Trigger:             trigger,
+		Components:          components,
+		RuleScopeARIs:       scopeARIsFromProjectIDs(cloudID, projectIDs, extraScopeARIs),
+		Actor:               actorFromAccountID(actorAccountID),
+		CanOtherRuleTrigger: canOtherRuleTrigger,
+		NotifyOnError:       notifyOnError,
 	}, nil
+}
+
+// normalizeBodyStrippedKeys are removed from every JSON object encountered
+// during normalizeBody, regardless of nesting depth — keys the server adds
+// to a rule document that were never in what the user wrote.
+var normalizeBodyStrippedKeys = map[string]bool{
+	"id":            true,
+	"schemaVersion": true,
+}
+
+// normalizeBodyEmptyArrayKeys are dropped from a JSON object during
+// normalizeBody when their value is an empty array — the server echoes
+// these back to mean "none" even when the user's body never wrote them.
+var normalizeBodyEmptyArrayKeys = map[string]bool{
+	"conditions": true,
+	"children":   true,
+}
+
+// normalizeBody normalizes raw for semantic COMPARISON only: it recursively
+// removes normalizeBodyStrippedKeys, drops empty
+// normalizeBodyEmptyArrayKeys arrays, sorts object keys, and re-marshals
+// compactly. It must never be used to decide what gets sent on the wire —
+// only whether two body values describe the same rule. (encoding/json
+// already marshals Go maps with sorted keys, so building the normalized
+// value as map[string]interface{} gets key sorting for free.)
+func normalizeBody(raw json.RawMessage) (json.RawMessage, error) {
+	var v interface{}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, fmt.Errorf("parsing body for normalization: %w", err)
+	}
+	out, err := json.Marshal(normalizeBodyValue(v))
+	if err != nil {
+		return nil, fmt.Errorf("re-marshaling normalized body: %w", err)
+	}
+	return out, nil
+}
+
+func normalizeBodyValue(v interface{}) interface{} {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(val))
+		for k, child := range val {
+			if normalizeBodyStrippedKeys[k] {
+				continue
+			}
+			if normalizeBodyEmptyArrayKeys[k] {
+				if arr, ok := child.([]interface{}); ok && len(arr) == 0 {
+					continue
+				}
+			}
+			out[k] = normalizeBodyValue(child)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(val))
+		for i, child := range val {
+			out[i] = normalizeBodyValue(child)
+		}
+		return out
+	default:
+		return val
+	}
+}
+
+// bodyEqual reports whether a and b (each a `body` attribute JSON string)
+// are semantically equal per normalizeBody.
+func bodyEqual(a, b string) (bool, error) {
+	na, err := normalizeBody(json.RawMessage(a))
+	if err != nil {
+		return false, fmt.Errorf("normalizing first body: %w", err)
+	}
+	nb, err := normalizeBody(json.RawMessage(b))
+	if err != nil {
+		return false, fmt.Errorf("normalizing second body: %w", err)
+	}
+	return string(na) == string(nb), nil
+}
+
+// bodyForState decides what Read should store as the `body` attribute:
+// newBody (the server's re-serialized trigger+components) if it is not
+// semantically equal to oldBody, or oldBody unchanged if it is equal — so a
+// server echo that only adds "id"/"schemaVersion"/empty
+// "conditions"/"children" (see normalizeBody) does not disturb the user's
+// original formatting/ordering in state. oldBody == "" (no prior state,
+// e.g. right after Create) always takes newBody.
+func bodyForState(oldBody, newBody string) (string, error) {
+	if oldBody == "" {
+		return newBody, nil
+	}
+	equal, err := bodyEqual(oldBody, newBody)
+	if err != nil {
+		return "", err
+	}
+	if equal {
+		return oldBody, nil
+	}
+	return newBody, nil
+}
+
+// RuleBodyType is the CustomType for the `body` attribute: a JSON string
+// (RFC 7159) like jsontypes.NormalizedType, but with semantic equality
+// defined by normalizeBody (ignoring server-added "id"/"schemaVersion" and
+// empty "conditions"/"children" arrays) instead of plain whitespace/key
+// -order normalization.
+type RuleBodyType struct {
+	basetypes.StringType
+}
+
+var _ basetypes.StringTypable = RuleBodyType{}
+
+// String returns a human readable string of the type name.
+func (t RuleBodyType) String() string {
+	return "jira.RuleBodyType"
+}
+
+// ValueType returns the Value type.
+func (t RuleBodyType) ValueType(_ context.Context) attr.Value {
+	return RuleBodyValue{}
+}
+
+// Equal returns true if the given type is equivalent.
+func (t RuleBodyType) Equal(o attr.Type) bool {
+	other, ok := o.(RuleBodyType)
+	if !ok {
+		return false
+	}
+	return t.StringType.Equal(other.StringType)
+}
+
+// ValueFromString returns a StringValuable type given a StringValue.
+func (t RuleBodyType) ValueFromString(_ context.Context, in basetypes.StringValue) (basetypes.StringValuable, diag.Diagnostics) {
+	return RuleBodyValue{Normalized: jsontypes.Normalized{StringValue: in}}, nil
+}
+
+// ValueFromTerraform returns a Value given a tftypes.Value. Mirrors
+// jsontypes.NormalizedType.ValueFromTerraform, routed through this type's
+// own ValueFromString so the result is a RuleBodyValue.
+func (t RuleBodyType) ValueFromTerraform(ctx context.Context, in tftypes.Value) (attr.Value, error) {
+	attrValue, err := t.StringType.ValueFromTerraform(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+
+	stringValue, ok := attrValue.(basetypes.StringValue)
+	if !ok {
+		return nil, fmt.Errorf("unexpected value type of %T", attrValue)
+	}
+
+	stringValuable, diags := t.ValueFromString(ctx, stringValue)
+	if diags.HasError() {
+		return nil, fmt.Errorf("unexpected error converting StringValue to StringValuable: %v", diags)
+	}
+
+	return stringValuable, nil
+}
+
+// RuleBodyValue is the attr.Value for the `body` attribute. It embeds
+// jsontypes.Normalized for JSON-validity checking (xattr.ValidateableAttribute)
+// and json.Unmarshal (promoted as-is, since neither depends on the concrete
+// type), but overrides Type/Equal/StringSemanticEquals so that:
+//   - its Type() is RuleBodyType (not jsontypes.NormalizedType);
+//   - Equal() compares two RuleBodyValues (the promoted jsontypes.Normalized.Equal
+//     would otherwise always return false here, since it type-asserts the
+//     argument to jsontypes.Normalized, which a RuleBodyValue never is even
+//     though it embeds one);
+//   - StringSemanticEquals() uses normalizeBody instead of plain
+//     whitespace/key-order JSON equivalence.
+type RuleBodyValue struct {
+	jsontypes.Normalized
+}
+
+var (
+	_ basetypes.StringValuable                   = RuleBodyValue{}
+	_ basetypes.StringValuableWithSemanticEquals = RuleBodyValue{}
+)
+
+// NewRuleBodyValue creates a RuleBodyValue with a known value.
+func NewRuleBodyValue(value string) RuleBodyValue {
+	return RuleBodyValue{Normalized: jsontypes.NewNormalizedValue(value)}
+}
+
+// NewRuleBodyNull creates a RuleBodyValue with a null value.
+func NewRuleBodyNull() RuleBodyValue {
+	return RuleBodyValue{Normalized: jsontypes.NewNormalizedNull()}
+}
+
+// NewRuleBodyUnknown creates a RuleBodyValue with an unknown value.
+func NewRuleBodyUnknown() RuleBodyValue {
+	return RuleBodyValue{Normalized: jsontypes.NewNormalizedUnknown()}
+}
+
+// Type returns a RuleBodyType.
+func (v RuleBodyValue) Type(_ context.Context) attr.Type {
+	return RuleBodyType{}
+}
+
+// Equal returns true if the given value is equivalent.
+func (v RuleBodyValue) Equal(o attr.Value) bool {
+	other, ok := o.(RuleBodyValue)
+	if !ok {
+		return false
+	}
+	return v.Normalized.Equal(other.Normalized)
+}
+
+// StringSemanticEquals returns true if newValuable is semantically equal to
+// v per normalizeBody — i.e. ignoring server-added "id"/"schemaVersion" and
+// empty "conditions"/"children" arrays, on top of the usual
+// whitespace/key-order insensitivity.
+func (v RuleBodyValue) StringSemanticEquals(_ context.Context, newValuable basetypes.StringValuable) (bool, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	newValue, ok := newValuable.(RuleBodyValue)
+	if !ok {
+		diags.AddError(
+			"Semantic Equality Check Error",
+			"An unexpected value type was received while performing semantic equality checks. "+
+				"Please report this to the provider developers.\n\n"+
+				"Expected Value Type: "+fmt.Sprintf("%T", v)+"\n"+
+				"Got Value Type: "+fmt.Sprintf("%T", newValuable),
+		)
+		return false, diags
+	}
+
+	equal, err := bodyEqual(v.ValueString(), newValue.ValueString())
+	if err != nil {
+		diags.AddError(
+			"Semantic Equality Check Error",
+			"An unexpected error occurred while performing semantic equality checks. "+
+				"Please report this to the provider developers.\n\n"+
+				"Error: "+err.Error(),
+		)
+		return false, diags
+	}
+
+	return equal, diags
 }
