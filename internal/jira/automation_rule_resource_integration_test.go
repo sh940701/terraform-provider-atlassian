@@ -31,40 +31,17 @@ func sweepAutomationRules(_ string) error {
 
 	ctx := context.Background()
 
-	// List automation rules via the Automation Rule Management API.
-	automationURL, err := client.AutomationURL(ctx, "/rules")
+	summaries, err := listAutomationRuleSummaries(ctx, client)
 	if err != nil {
-		return fmt.Errorf("building automation rules URL: %w", err)
-	}
-
-	var result struct {
-		Rules []struct {
-			UUID string `json:"uuid"`
-			Name string `json:"name"`
-		} `json:"rules"`
-	}
-	if err := client.Get(ctx, automationURL, &result); err != nil {
 		return fmt.Errorf("listing automation rules for sweep: %w", err)
 	}
 
-	for _, rule := range result.Rules {
+	for _, rule := range summaries {
 		if !strings.HasPrefix(rule.Name, "tf-acc-test-") {
 			continue
 		}
-
-		// Disable then delete, matching the resource's Delete sequence.
-		ruleURL, err := client.AutomationURL(ctx, "/rule/"+atlassian.PathEscape(rule.UUID))
-		if err != nil {
-			fmt.Printf("[WARN] building rule URL for %q (%s): %s\n", rule.Name, rule.UUID, err)
-			continue
-		}
-
-		stateURL := ruleURL + "/state"
-		_, _ = client.PutWithStatus(ctx, stateURL, map[string]string{"state": "DISABLED"}, nil)
-
-		_, delErr := client.DeleteWithStatus(ctx, ruleURL)
-		if delErr != nil {
-			fmt.Printf("[WARN] Failed to delete automation rule %q (%s): %s\n", rule.Name, rule.UUID, delErr)
+		if err := deleteAutomationRule(ctx, client, rule.UUID); err != nil {
+			fmt.Printf("[WARN] Failed to delete automation rule %q (%s): %s\n", rule.Name, rule.UUID, err)
 		}
 	}
 

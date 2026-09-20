@@ -2,6 +2,7 @@ package jira
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -221,13 +222,90 @@ func (r *automationRuleResource) putRuleScope(ctx context.Context, uuid string, 
 }
 
 // putRuleState calls PUT /rule/{uuid}/state with the desired ENABLED/DISABLED
-// state, returning the response status code (see putRuleScope).
-func (r *automationRuleResource) putRuleState(ctx context.Context, uuid, state string) (int, error) {
-	statePath, err := r.client.AutomationURL(ctx, "/rule/"+atlassian.PathEscape(uuid)+"/state")
+// state, returning the response status code (see putRuleScope). Package-level
+// so the sweeper can reuse the same payload shape as the resource.
+func putRuleState(ctx context.Context, client *atlassian.Client, uuid, state string) (int, error) {
+	statePath, err := client.AutomationURL(ctx, "/rule/"+atlassian.PathEscape(uuid)+"/state")
 	if err != nil {
 		return 0, fmt.Errorf("building Automation API URL: %w", err)
 	}
-	return r.client.PutWithStatus(ctx, statePath, ruleStateRequest{State: state}, nil)
+	return client.PutWithStatus(ctx, statePath, ruleStateRequest{State: state}, nil)
+}
+
+func (r *automationRuleResource) putRuleState(ctx context.Context, uuid, state string) (int, error) {
+	return putRuleState(ctx, r.client, uuid, state)
+}
+
+// ruleSummary is one row of GET /rule/summary (S1 spike: {uuid, name, state, ...}).
+type ruleSummary struct {
+	UUID  string `json:"uuid"`
+	Name  string `json:"name"`
+	State string `json:"state"`
+}
+
+// listAutomationRuleSummaries pages GET /rule/summary.
+// Envelope is {"data": [...], "links": {"next": ...}} — observed on a real
+// site (S1). A 200 whose envelope has no "data" key is an error, not an
+// empty list: that used to let a guessed GET /rules shape silently skip
+// leftover tf-acc-test-* rules.
+func listAutomationRuleSummaries(ctx context.Context, client *atlassian.Client) ([]ruleSummary, error) {
+	path, err := client.AutomationURL(ctx, "/rule/summary")
+	if err != nil {
+		return nil, fmt.Errorf("building automation rule summary URL: %w", err)
+	}
+
+	var all []ruleSummary
+	for page := 0; page < atlassian.MaxPages; page++ {
+		var envelope map[string]json.RawMessage
+		if err := client.Get(ctx, path, &envelope); err != nil {
+			return nil, fmt.Errorf("listing automation rule summaries: %w", err)
+		}
+		data, ok := envelope["data"]
+		if !ok {
+			return nil, fmt.Errorf("GET /rule/summary: response missing data key")
+		}
+		var summaries []ruleSummary
+		if err := json.Unmarshal(data, &summaries); err != nil {
+			return nil, fmt.Errorf("GET /rule/summary: decoding data: %w", err)
+		}
+		all = append(all, summaries...)
+
+		var links struct {
+			Next string `json:"next"`
+		}
+		if raw, ok := envelope["links"]; ok && len(raw) > 0 {
+			if err := json.Unmarshal(raw, &links); err != nil {
+				return nil, fmt.Errorf("GET /rule/summary: decoding links: %w", err)
+			}
+		}
+		if links.Next == "" {
+			return all, nil
+		}
+		// Next is an absolute Automation API URL on a real site; Client.Get
+		// accepts it because the origin is already on the allowlist.
+		path = links.Next
+	}
+	return nil, fmt.Errorf("listing automation rule summaries: exceeded %d pages", atlassian.MaxPages)
+}
+
+// deleteAutomationRule disables then deletes, matching the resource Delete
+// sequence. A 404 on either step is treated as already gone.
+func deleteAutomationRule(ctx context.Context, client *atlassian.Client, uuid string) error {
+	disableStatus, err := putRuleState(ctx, client, uuid, ruleStateDisabled)
+	if err != nil && disableStatus != http.StatusNotFound {
+		return fmt.Errorf("disabling before delete: %w", err)
+	}
+
+	rulePath, err := client.AutomationURL(ctx, "/rule/"+atlassian.PathEscape(uuid))
+	if err != nil {
+		return fmt.Errorf("building Automation API URL: %w", err)
+	}
+
+	statusCode, err := client.DeleteWithStatus(ctx, rulePath)
+	if statusCode == http.StatusNotFound {
+		return nil
+	}
+	return err
 }
 
 func (r *automationRuleResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -479,23 +557,7 @@ func (r *automationRuleResource) Delete(ctx context.Context, req resource.Delete
 
 	uuid := state.UUID.ValueString()
 
-	disableStatus, err := r.putRuleState(ctx, uuid, ruleStateDisabled)
-	if err != nil && disableStatus != http.StatusNotFound {
-		resp.Diagnostics.AddError("Error deleting automation rule", fmt.Sprintf("disabling before delete: %s", err))
-		return
-	}
-
-	rulePath, err := r.client.AutomationURL(ctx, "/rule/"+atlassian.PathEscape(uuid))
-	if err != nil {
-		resp.Diagnostics.AddError("Error deleting automation rule", fmt.Sprintf("building Automation API URL: %s", err))
-		return
-	}
-
-	statusCode, err := r.client.DeleteWithStatus(ctx, rulePath)
-	if statusCode == http.StatusNotFound {
-		return // already gone
-	}
-	if err != nil {
+	if err := deleteAutomationRule(ctx, r.client, uuid); err != nil {
 		resp.Diagnostics.AddError("Error deleting automation rule", err.Error())
 		return
 	}
