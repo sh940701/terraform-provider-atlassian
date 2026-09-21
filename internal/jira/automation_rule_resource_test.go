@@ -914,3 +914,53 @@ func jsonEquivalent(got, want interface{}) bool {
 	}
 	return reflect.DeepEqual(ai, bi)
 }
+
+// The Automation Rule Management API addresses a rule's actor as
+// {"type": "ACCOUNT_ID", "actor": "<accountId>"} (verified against a real site
+// on 2026-09-21 — sending the id under "value" makes POST /rule answer 400
+// "The request body could not be parsed"). Pin the wire shape so a refactor
+// cannot silently reintroduce "value".
+func TestAccAutomationRuleResource_ActorWireShape(t *testing.T) {
+	mock := newAutomationRuleMock()
+	serverURL := setupAutomationRuleMock(t, mock)
+
+	config := fmt.Sprintf(`provider "atlassian" {
+  url                 = %[1]q
+  automation_base_url = %[1]q
+}
+
+resource "atlassian_jira_automation_rule" "test" {
+  name             = "K-CARE ticket watcher"
+  project_ids      = ["10549"]
+  actor_account_id = "712020:bot"
+  body             = %[2]s
+}
+`, serverURL, bodyRawJSON)
+
+	resource.Test(t, resource.TestCase{
+		IsUnitTest:               true,
+		ProtoV6ProviderFactories: testutil.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("atlassian_jira_automation_rule.test", "actor_account_id", "712020:bot"),
+					func(_ *terraform.State) error {
+						raw := mock.lastPosted()
+						if raw == nil {
+							return fmt.Errorf("mock recorded no POST body")
+						}
+						actor, _ := raw["actor"].(map[string]interface{})
+						if actor["type"] != "ACCOUNT_ID" || actor["actor"] != "712020:bot" {
+							return fmt.Errorf(`actor must be sent as {"type":"ACCOUNT_ID","actor":<id>}, got %v`, raw["actor"])
+						}
+						if _, ok := actor["value"]; ok {
+							return fmt.Errorf(`actor must not carry a "value" key, got %v`, raw["actor"])
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1] (2026-09-21)
+
+
+### Bug Fixes
+
+* `atlassian_jira_automation_rule`: send the rule actor as `{"type": "ACCOUNT_ID", "actor": "<accountId>"}` — the API rejected the previous `"value"` key with 400 "The request body could not be parsed" on every create with `actor_account_id` set (found on the first real apply, 2026-09-21). Read/import parse the same key. A unit test pins the wire shape.
+
 ## [0.3.0] (2026-09-21)
 
 

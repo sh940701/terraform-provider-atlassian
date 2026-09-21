@@ -54,12 +54,15 @@ type ruleDoc struct {
 	UUID                string `json:"uuid,omitempty"`
 }
 
-// ruleActor names who a rule's actions run as. The exact JSON shape is
-// unverified against the real API (T5) — kept behind actorFromAccountID and
-// (*ruleActor).accountID so a later task can adjust it in one place.
+// ruleActor names who a rule's actions run as. Verified against a real
+// site (2026-09-21, bsgglobal.atlassian.net): the API's shape is
+// {"type": "ACCOUNT_ID", "actor": "<accountId>"} — the id lives under
+// "actor", not "value". Sending "value" makes POST /rule answer 400
+// "The request body could not be parsed". Kept behind actorFromAccountID and
+// (*ruleActor).accountID so the shape stays in one place.
 type ruleActor struct {
 	Type  string `json:"type"`
-	Value string `json:"value"`
+	Value string `json:"actor"`
 }
 
 const ruleActorTypeAccountID = "ACCOUNT_ID"
