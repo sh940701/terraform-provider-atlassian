@@ -392,12 +392,23 @@ func (r *workflowSchemeResource) requiredStatusMappings(ctx context.Context, sch
 		return []statusMapping{}, nil
 	}
 
-	// workflow name → id (the mappings endpoint speaks ids)
+	// The mappings endpoint wants the scheme's complete association — every
+	// issue type mapped, or a default covering it — so resolve every
+	// workflow the draft names (ids; the endpoint does not take names).
+	names := map[string]bool{}
+	for _, name := range draft.IssueTypeMappings {
+		names[name] = true
+	}
+	if draft.DefaultWorkflow != "" {
+		names[draft.DefaultWorkflow] = true
+	}
+	sorted := make([]string, 0, len(names))
+	for name := range names {
+		sorted = append(sorted, name)
+	}
+	sort.Strings(sorted)
 	wfID := map[string]string{}
-	for _, name := range changed {
-		if _, done := wfID[name]; done {
-			continue
-		}
+	for _, name := range sorted {
 		id, err := r.workflowIDByName(ctx, name)
 		if err != nil {
 			return nil, err
@@ -406,13 +417,23 @@ func (r *workflowSchemeResource) requiredStatusMappings(ctx context.Context, sch
 	}
 
 	byWF := map[string][]string{}
-	for issueType, name := range changed {
+	for issueType, name := range draft.IssueTypeMappings {
 		byWF[wfID[name]] = append(byWF[wfID[name]], issueType)
 	}
-	req := map[string]interface{}{"id": schemeID, "workflowsForIssueTypes": []map[string]interface{}{}}
-	for id, issueTypes := range byWF {
+	associations := []map[string]interface{}{}
+	wfIDs := make([]string, 0, len(byWF))
+	for id := range byWF {
+		wfIDs = append(wfIDs, id)
+	}
+	sort.Strings(wfIDs)
+	for _, id := range wfIDs {
+		issueTypes := byWF[id]
 		sort.Strings(issueTypes)
-		req["workflowsForIssueTypes"] = append(req["workflowsForIssueTypes"].([]map[string]interface{}), map[string]interface{}{"workflowId": id, "issueTypeIds": issueTypes})
+		associations = append(associations, map[string]interface{}{"workflowId": id, "issueTypeIds": issueTypes})
+	}
+	req := map[string]interface{}{"id": schemeID, "workflowsForIssueTypes": associations}
+	if draft.DefaultWorkflow != "" {
+		req["defaultWorkflowId"] = wfID[draft.DefaultWorkflow]
 	}
 	var required struct {
 		ByIssueType []struct {
@@ -436,6 +457,14 @@ func (r *workflowSchemeResource) requiredStatusMappings(ctx context.Context, sch
 		initial[w.WorkflowID] = w.InitialStatusID
 	}
 
+	// target workflow of an issue type = its draft mapping (or the default)
+	targetWF := func(issueType string) string {
+		if name, ok := draft.IssueTypeMappings[issueType]; ok {
+			return wfID[name]
+		}
+		return wfID[draft.DefaultWorkflow]
+	}
+
 	// (issue type, status) pairs to map; by-workflow entries apply to every
 	// issue type moving to that workflow
 	need := map[string]map[string]bool{}
@@ -451,8 +480,8 @@ func (r *workflowSchemeResource) requiredStatusMappings(ctx context.Context, sch
 		}
 	}
 	for _, e := range required.ByWorkflow {
-		for issueType, name := range changed {
-			if wfID[name] == e.TargetWorkflowID {
+		for issueType := range changed {
+			if targetWF(issueType) == e.TargetWorkflowID {
 				for _, st := range e.StatusIDs {
 					add(issueType, st)
 				}
@@ -462,9 +491,9 @@ func (r *workflowSchemeResource) requiredStatusMappings(ctx context.Context, sch
 
 	out := []statusMapping{}
 	for issueType, statuses := range need {
-		target := initial[wfID[changed[issueType]]]
+		target := initial[targetWF(issueType)]
 		if target == "" {
-			return nil, fmt.Errorf("issue type %s needs status mappings but Jira reported no initial status for workflow %q", issueType, changed[issueType])
+			return nil, fmt.Errorf("issue type %s needs status mappings but Jira reported no initial status for its new workflow", issueType)
 		}
 		for st := range statuses {
 			out = append(out, statusMapping{IssueTypeID: issueType, StatusID: st, NewStatusID: target})

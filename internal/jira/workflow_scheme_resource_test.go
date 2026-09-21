@@ -648,19 +648,26 @@ func TestAccWorkflowSchemeResource_ActiveSchemeUpdatesViaDraft(t *testing.T) {
 		case r.Method == "GET" && r.URL.Path == "/rest/api/3/workflows/search":
 			record("GET workflows/search " + r.URL.Query().Get("queryString"))
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"values": []map[string]string{
-				{"id": "wf-sub", "name": "Subtask Workflow"}, {"id": "wf-bug", "name": "Bug Workflow"}}})
+				{"id": "wf-sub", "name": "Subtask Workflow"}, {"id": "wf-bug", "name": "Bug Workflow"}, {"id": "wf-jira", "name": "jira"}}})
 		case r.Method == "POST" && r.URL.Path == "/rest/api/3/workflowscheme/update/mappings":
 			record("POST update/mappings")
 			var body struct {
 				ID                     string `json:"id"`
+				DefaultWorkflowID      string `json:"defaultWorkflowId"`
 				WorkflowsForIssueTypes []struct {
 					WorkflowID   string   `json:"workflowId"`
 					IssueTypeIDs []string `json:"issueTypeIds"`
 				} `json:"workflowsForIssueTypes"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			if body.ID != "10000" || len(body.WorkflowsForIssueTypes) != 1 || body.WorkflowsForIssueTypes[0].WorkflowID != "wf-sub" ||
-				len(body.WorkflowsForIssueTypes[0].IssueTypeIDs) != 1 || body.WorkflowsForIssueTypes[0].IssueTypeIDs[0] != "10002" {
+			// the endpoint wants the complete association: every mapped issue type + the default
+			assoc := map[string]string{}
+			for _, a := range body.WorkflowsForIssueTypes {
+				for _, it := range a.IssueTypeIDs {
+					assoc[it] = a.WorkflowID
+				}
+			}
+			if body.ID != "10000" || assoc["10001"] != "wf-bug" || assoc["10002"] != "wf-sub" || body.DefaultWorkflowID != "wf-jira" {
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte(`{"errorMessages":["unexpected update/mappings request"]}`))
 				return
@@ -725,7 +732,7 @@ func TestAccWorkflowSchemeResource_ActiveSchemeUpdatesViaDraft(t *testing.T) {
 					func(_ *terraform.State) error {
 						mu.Lock()
 						defer mu.Unlock()
-						want := []string{"PUT scheme", "POST createdraft", "PUT draft", "GET workflows/search Subtask Workflow", "POST update/mappings", "POST publish", "GET task"}
+						want := []string{"PUT scheme", "POST createdraft", "PUT draft", "GET workflows/search Bug Workflow", "GET workflows/search Subtask Workflow", "GET workflows/search jira", "POST update/mappings", "POST publish", "GET task"}
 						if len(calls) < len(want) {
 							return fmt.Errorf("draft route not taken, calls: %v", calls)
 						}
