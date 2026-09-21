@@ -44,10 +44,14 @@ type ruleDoc struct {
 	// unchanged) — see scopeARIsFromProjectIDs.
 	RuleScopeARIs []string   `json:"ruleScopeARIs"`
 	Actor         *ruleActor `json:"actor,omitempty"`
-	// WriteAccessType is intentionally never set (omitempty keeps it out
-	// of every request this resource sends) — whether the Automation Rule
-	// Management API requires it is unconfirmed (T5/T6); a follow-up task
-	// (S2) should confirm against a real site and wire it up here if so.
+	// AuthorAccountID is required by the server to even parse a write
+	// request (real-site bisect 2026-09-21: omitting it yields 400 "The
+	// request body could not be parsed"). Filled from actor_account_id, or
+	// the requesting user (/rest/api/3/myself) when no actor is configured.
+	AuthorAccountID string `json:"authorAccountId,omitempty"`
+	// WriteAccessType is required by the server to parse a write request
+	// (real-site bisect 2026-09-21). Always sent as UNRESTRICTED — the
+	// resource does not model per-user write access.
 	WriteAccessType     string `json:"writeAccessType,omitempty"`
 	CanOtherRuleTrigger bool   `json:"canOtherRuleTrigger"`
 	NotifyOnError       string `json:"notifyOnError,omitempty"`
@@ -115,7 +119,15 @@ func docFromBody(body string) (trigger, components json.RawMessage, err error) {
 	if len(parsed.Components) == 0 {
 		return nil, nil, fmt.Errorf(`rule body must have a "components" array`)
 	}
-	return parsed.Trigger, parsed.Components, nil
+	trigger, err = withSchemaVersion(parsed.Trigger)
+	if err != nil {
+		return nil, nil, err
+	}
+	components, err = withSchemaVersion(parsed.Components)
+	if err != nil {
+		return nil, nil, err
+	}
+	return trigger, components, nil
 }
 
 // projectScopeARIPattern matches the ARI shape for a rule scoped to one
@@ -188,7 +200,7 @@ func scopeARIsFromProjectIDs(cloudID string, projectIDs, extraScopeARIs []string
 // (POST /rule) and Update (PUT /rule/{uuid}) — Update additionally sets the
 // returned doc's UUID field itself, since docFromRule has no id to assign
 // on Create.
-func docFromRule(cloudID, name, description, state string, projectIDs, extraScopeARIs []string, body, actorAccountID string, canOtherRuleTrigger bool, notifyOnError string) (ruleDoc, error) {
+func docFromRule(cloudID, name, description, state string, projectIDs, extraScopeARIs []string, body, actorAccountID, authorAccountID string, canOtherRuleTrigger bool, notifyOnError string) (ruleDoc, error) {
 	trigger, components, err := docFromBody(body)
 	if err != nil {
 		return ruleDoc{}, err
@@ -201,9 +213,55 @@ func docFromRule(cloudID, name, description, state string, projectIDs, extraScop
 		Components:          components,
 		RuleScopeARIs:       scopeARIsFromProjectIDs(cloudID, projectIDs, extraScopeARIs),
 		Actor:               actorFromAccountID(actorAccountID),
+		AuthorAccountID:     authorAccountID,
+		WriteAccessType:     ruleWriteAccessUnrestricted,
 		CanOtherRuleTrigger: canOtherRuleTrigger,
 		NotifyOnError:       notifyOnError,
 	}, nil
+}
+
+const ruleWriteAccessUnrestricted = "UNRESTRICTED"
+
+// withSchemaVersion returns raw with "schemaVersion": 1 added to every
+// component object (trigger, components, and their children/conditions)
+// that lacks one. The server refuses to parse a write request whose
+// components carry no schemaVersion (real-site bisect 2026-09-21); it
+// accepts 1 for every component type seen so far. normalizeBody strips
+// the key for comparison, so this never shows up as drift.
+func withSchemaVersion(raw json.RawMessage) (json.RawMessage, error) {
+	if len(raw) == 0 {
+		return raw, nil
+	}
+	var v interface{}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, fmt.Errorf("parsing rule body for schemaVersion: %w", err)
+	}
+	var walk func(n interface{})
+	walk = func(n interface{}) {
+		switch t := n.(type) {
+		case map[string]interface{}:
+			if _, isComponent := t["component"]; isComponent {
+				if _, ok := t["schemaVersion"]; !ok {
+					t["schemaVersion"] = 1
+				}
+			}
+			for _, k := range []string{"children", "conditions"} {
+				if c, ok := t[k]; ok {
+					walk(c)
+				}
+			}
+		case []interface{}:
+			for _, e := range t {
+				walk(e)
+			}
+		}
+	}
+	walk(v)
+	out, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("re-encoding rule body: %w", err)
+	}
+	return out, nil
 }
 
 // normalizeBodyStrippedKeys are removed from every JSON object encountered

@@ -97,7 +97,7 @@ func TestActorFromAccountIDAndBack(t *testing.T) {
 
 func TestDocFromRuleBuildsScopeARIsAndActor(t *testing.T) {
 	body := `{"trigger":{"type":"t"},"components":[{"type":"c"}]}`
-	doc, err := docFromRule("abc", "K-CARE watcher", "desc", "ENABLED", []string{"10549", "99"}, nil, body, "acct-1", true, "FIRSTERROR")
+	doc, err := docFromRule("abc", "K-CARE watcher", "desc", "ENABLED", []string{"10549", "99"}, nil, body, "acct-1", "acct-1", true, "FIRSTERROR")
 	if err != nil {
 		t.Fatalf("docFromRule: unexpected error: %s", err)
 	}
@@ -122,7 +122,7 @@ func TestDocFromRuleBuildsScopeARIsAndActor(t *testing.T) {
 func TestDocFromRuleKeepsExtraScopeARIsUnchanged(t *testing.T) {
 	body := `{"trigger":{"type":"t"},"components":[{"type":"c"}]}`
 	extra := []string{"ari:cloud:jira:abc:board/1"}
-	doc, err := docFromRule("abc", "n", "", "ENABLED", []string{"10549"}, extra, body, "", false, "")
+	doc, err := docFromRule("abc", "n", "", "ENABLED", []string{"10549"}, extra, body, "", "me-1", false, "")
 	if err != nil {
 		t.Fatalf("docFromRule: unexpected error: %s", err)
 	}
@@ -133,7 +133,7 @@ func TestDocFromRuleKeepsExtraScopeARIsUnchanged(t *testing.T) {
 }
 
 func TestDocFromRulePropagatesBodyError(t *testing.T) {
-	if _, err := docFromRule("abc", "n", "", "ENABLED", nil, nil, `{"trigger":{}}`, "", false, ""); err == nil {
+	if _, err := docFromRule("abc", "n", "", "ENABLED", nil, nil, `{"trigger":{}}`, "", "me-1", false, ""); err == nil {
 		t.Error("expected docFromRule to propagate a body parse error")
 	}
 }

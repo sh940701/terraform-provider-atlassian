@@ -273,6 +273,9 @@ func (m *automationRuleMock) handler() http.HandlerFunc {
 			delete(m.rules, id)
 			w.WriteHeader(http.StatusNoContent)
 
+		case r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/myself":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"accountId": "me-1"})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -483,9 +486,10 @@ func TestAccAutomationRuleResource_UpdateNameAndBody(t *testing.T) {
 						}
 						if !jsonEquivalent(put["components"], []interface{}{
 							map[string]interface{}{
-								"component": "ACTION",
-								"type":      "jira.issue.assign",
-								"value":     map[string]interface{}{"assignee": "reporter"},
+								"component":     "ACTION",
+								"type":          "jira.issue.assign",
+								"value":         map[string]interface{}{"assignee": "reporter"},
+								"schemaVersion": 1,
 							},
 						}) {
 							return fmt.Errorf("unexpected components in PUT body: %v", put["components"])
@@ -822,17 +826,25 @@ func TestAccAutomationRuleResource_basic(t *testing.T) {
 						if v, ok := raw["actor"]; ok {
 							return fmt.Errorf("actor must not be sent when actor_account_id is unset, got %v", v)
 						}
+						if doc["authorAccountId"] != "me-1" {
+							return fmt.Errorf("authorAccountId must default to the requesting user, got %v", doc["authorAccountId"])
+						}
+						if doc["writeAccessType"] != "UNRESTRICTED" {
+							return fmt.Errorf("writeAccessType must be sent, got %v", doc["writeAccessType"])
+						}
 						if !jsonEquivalent(doc["trigger"], map[string]interface{}{
-							"component": "TRIGGER",
-							"type":      "jira.manual.trigger.trigger",
+							"component":     "TRIGGER",
+							"type":          "jira.manual.trigger.trigger",
+							"schemaVersion": 1,
 						}) {
 							return fmt.Errorf("unexpected trigger sent: %v", doc["trigger"])
 						}
 						wantComponents := []interface{}{
 							map[string]interface{}{
-								"component": "ACTION",
-								"type":      "jira.issue.assign",
-								"value":     map[string]interface{}{"assignee": "current-user"},
+								"component":     "ACTION",
+								"type":          "jira.issue.assign",
+								"value":         map[string]interface{}{"assignee": "current-user"},
+								"schemaVersion": 1,
 							},
 						}
 						if !jsonEquivalent(doc["components"], wantComponents) {
@@ -957,6 +969,9 @@ resource "atlassian_jira_automation_rule" "test" {
 						}
 						if _, ok := actor["value"]; ok {
 							return fmt.Errorf(`actor must not carry a "value" key, got %v`, raw["actor"])
+						}
+						if raw["authorAccountId"] != "712020:bot" {
+							return fmt.Errorf("authorAccountId must follow actor_account_id when set, got %v", raw["authorAccountId"])
 						}
 						return nil
 					},

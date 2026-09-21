@@ -234,6 +234,26 @@ func (r *automationRuleResource) putRuleScope(ctx context.Context, uuid string, 
 	return r.client.PutWithStatus(ctx, scopePath, ruleScopeRequest{RuleScopeARIs: aris}, nil)
 }
 
+// authorAccountID picks the value for the write request's authorAccountId,
+// which the server requires to parse the request at all: the configured
+// actor when there is one, otherwise the requesting user's own account id
+// from /rest/api/3/myself.
+func (r *automationRuleResource) authorAccountID(ctx context.Context, actorAccountID string) (string, error) {
+	if actorAccountID != "" {
+		return actorAccountID, nil
+	}
+	var me struct {
+		AccountID string `json:"accountId"`
+	}
+	if err := r.client.Get(ctx, "/rest/api/3/myself", &me); err != nil {
+		return "", fmt.Errorf("looking up the requesting user's account id (needed as authorAccountId): %w", err)
+	}
+	if me.AccountID == "" {
+		return "", fmt.Errorf("looking up the requesting user's account id: /rest/api/3/myself returned no accountId")
+	}
+	return me.AccountID, nil
+}
+
 // putRuleState calls PUT /rule/{uuid}/state with the desired ENABLED/DISABLED
 // state, returning the response status code (see putRuleScope). Package-level
 // so the sweeper can reuse the same payload shape as the resource.
@@ -340,9 +360,15 @@ func (r *automationRuleResource) Create(ctx context.Context, req resource.Create
 		return
 	}
 
+	author, err := r.authorAccountID(ctx, plan.ActorAccountID.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Error creating automation rule", err.Error())
+		return
+	}
+
 	// A brand new rule has no server-recorded non-project scopes yet.
 	doc, err := docFromRule(cloudID, plan.Name.ValueString(), plan.Description.ValueString(), plan.State.ValueString(),
-		projectIDs, nil, plan.Body.ValueString(), plan.ActorAccountID.ValueString(),
+		projectIDs, nil, plan.Body.ValueString(), plan.ActorAccountID.ValueString(), author,
 		plan.CanOtherRuleTrigger.ValueBool(), plan.NotifyOnError.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating automation rule", err.Error())
@@ -539,8 +565,14 @@ func (r *automationRuleResource) Update(ctx context.Context, req resource.Update
 
 	uuid := state.UUID.ValueString()
 
+	author, err := r.authorAccountID(ctx, plan.ActorAccountID.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Error updating automation rule", err.Error())
+		return
+	}
+
 	doc, err := docFromRule(cloudID, plan.Name.ValueString(), plan.Description.ValueString(), plan.State.ValueString(),
-		projectIDs, extraScopeARIs, plan.Body.ValueString(), plan.ActorAccountID.ValueString(),
+		projectIDs, extraScopeARIs, plan.Body.ValueString(), plan.ActorAccountID.ValueString(), author,
 		plan.CanOtherRuleTrigger.ValueBool(), plan.NotifyOnError.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating automation rule", err.Error())
