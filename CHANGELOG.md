@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.2] (2026-09-21)
+
+
+### Bug Fixes
+
+* `atlassian_jira_automation_rule` (resource + data source): read the rule document from the GET envelope `{"rule": {...}, "connections": [...]}` instead of the top level — before, every refresh decoded an empty document (spurious diffs, empty name/state on import).
+* `atlassian_jira_automation_rule`: create reads `ruleUuid` from the POST 201 response (spec) and reads the rule back once so server-added scope ARIs land in `extra_scope_aris`; the old fallbacks stay.
+* `atlassian_jira_automation_rule`: PUT `/rule/{uuid}/state` body is `{"value": ...}` per spec (was `{"state": ...}`).
+
 ## [0.3.1] (2026-09-21)
 
 

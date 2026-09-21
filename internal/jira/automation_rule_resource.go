@@ -178,14 +178,25 @@ type createRuleRequest struct {
 	Rule ruleDoc `json:"rule"`
 }
 
-// createRuleResponse is the POST /rule response. Its exact shape is
-// unconfirmed (T5): GET returns the rule document at the top level, but the
-// create response might either echo that shape directly (ruleDoc embedded
-// here promotes its fields, including "uuid", to the top level) or wrap it
-// under a "rule" key — so both are checked for uuid.
+// createRuleResponse is the POST /rule response. Per the Automation
+// OpenAPI spec (checked 2026-09-21) a 201 carries {"ruleUuid": "<uuid>"} and
+// nothing else. The two older guesses (a top-level rule document, or one
+// wrapped under "rule") are kept as fallbacks so a shape change on the
+// server side still yields a uuid instead of an orphaned rule.
 type createRuleResponse struct {
 	ruleDoc
-	Rule *ruleDoc `json:"rule,omitempty"`
+	RuleUUID string   `json:"ruleUuid"`
+	Rule     *ruleDoc `json:"rule,omitempty"`
+}
+
+// ruleGetResponse is the GET /rule/{uuid} response: the rule document lives
+// under "rule" next to a "connections" array (Automation OpenAPI spec and a
+// real-site export, 2026-09-21). Decoding the document at the top level —
+// what this resource did before 0.3.2 — yields an empty document and a
+// spurious diff on every refresh.
+type ruleGetResponse struct {
+	Rule        *ruleDoc        `json:"rule"`
+	Connections json.RawMessage `json:"connections,omitempty"`
 }
 
 // updateRuleRequest is the PUT /rule/{uuid} request body — mirrors
@@ -205,8 +216,10 @@ type ruleScopeRequest struct {
 }
 
 // ruleStateRequest is the PUT /rule/{uuid}/state request body.
+// The spec's PUT /rule/{uuid}/state body is {"value": "ENABLED"|"DISABLED"}
+// (checked 2026-09-21) — the key is "value", not "state".
 type ruleStateRequest struct {
-	State string `json:"state"`
+	State string `json:"value"`
 }
 
 // putRuleScope calls PUT /rule/{uuid}/rule-scope with the full scope ARI
@@ -348,7 +361,10 @@ func (r *automationRuleResource) Create(ctx context.Context, req resource.Create
 		return
 	}
 
-	uuid := result.UUID
+	uuid := result.RuleUUID
+	if uuid == "" {
+		uuid = result.UUID
+	}
 	if uuid == "" && result.Rule != nil {
 		uuid = result.Rule.UUID
 	}
@@ -375,6 +391,19 @@ func (r *automationRuleResource) Create(ctx context.Context, req resource.Create
 	responseScopeARIs := result.RuleScopeARIs
 	if len(responseScopeARIs) == 0 && result.Rule != nil {
 		responseScopeARIs = result.Rule.RuleScopeARIs
+	}
+	if len(responseScopeARIs) == 0 {
+		// The spec's create response is just {"ruleUuid"} — read the rule
+		// back once so a scope the server added on create (e.g. one derived
+		// from the actor) lands in extra_scope_aris now, not on the next
+		// Read as a surprise diff. A failed read-back is not fatal here: the
+		// rule exists, and Read will reconcile scopes on the next refresh.
+		if getPath, perr := r.client.AutomationURL(ctx, "/rule/"+atlassian.PathEscape(uuid)); perr == nil {
+			var got ruleGetResponse
+			if _, gerr := r.client.GetWithStatus(ctx, getPath, &got); gerr == nil && got.Rule != nil {
+				responseScopeARIs = got.Rule.RuleScopeARIs
+			}
+		}
 	}
 	if len(responseScopeARIs) == 0 {
 		// The response carried no scope info either way — fall back to what
@@ -406,8 +435,8 @@ func (r *automationRuleResource) Read(ctx context.Context, req resource.ReadRequ
 		return
 	}
 
-	var doc ruleDoc
-	statusCode, err := r.client.GetWithStatus(ctx, rulePath, &doc)
+	var got ruleGetResponse
+	statusCode, err := r.client.GetWithStatus(ctx, rulePath, &got)
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading automation rule", err.Error())
 		return
@@ -416,6 +445,11 @@ func (r *automationRuleResource) Read(ctx context.Context, req resource.ReadRequ
 		resp.State.RemoveResource(ctx)
 		return
 	}
+	if got.Rule == nil {
+		resp.Diagnostics.AddError("Error reading automation rule", "GET response carried no \"rule\" document")
+		return
+	}
+	doc := *got.Rule
 
 	newBody, err := bodyFromDoc(doc)
 	if err != nil {

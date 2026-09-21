@@ -158,8 +158,8 @@ func (m *automationRuleMock) handler() http.HandlerFunc {
 			m.rules[uuid] = doc
 			m.calls = append(m.calls, "POST rule "+uuid)
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(doc)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{"ruleUuid": uuid}) // spec: 201 {"ruleUuid"}
 
 		case r.Method == http.MethodGet && ruleIDRe.MatchString(r.URL.Path):
 			id := ruleIDRe.FindStringSubmatch(r.URL.Path)[1]
@@ -182,7 +182,8 @@ func (m *automationRuleMock) handler() http.HandlerFunc {
 				resp = injectAutomationRuleNoise(resp)
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(resp)
+			// spec: GET wraps the document — {"rule": {...}, "connections": []}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"rule": resp, "connections": []interface{}{}})
 
 		case r.Method == http.MethodPut && ruleScopeRe.MatchString(r.URL.Path):
 			id := ruleScopeRe.FindStringSubmatch(r.URL.Path)[1]
@@ -215,7 +216,7 @@ func (m *automationRuleMock) handler() http.HandlerFunc {
 				return
 			}
 			var body struct {
-				State string `json:"state"`
+				State string `json:"value"` // spec: {"value": "ENABLED"|"DISABLED"}
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.State == "" {
 				w.WriteHeader(http.StatusBadRequest)
@@ -547,7 +548,7 @@ func TestAccAutomationRuleResource_UpdateProjectIDsCallsRuleScopeAndPreservesExt
 
 // TestAccAutomationRuleResource_UpdateStateCallsStateEndpoint covers T6
 // acceptance item (c): flipping ENABLED -> DISABLED must PUT
-// /rule/{uuid}/state with {"state": "DISABLED"}.
+// /rule/{uuid}/state with {"value": "DISABLED"}.
 func TestAccAutomationRuleResource_UpdateStateCallsStateEndpoint(t *testing.T) {
 	mock := newAutomationRuleMock()
 	serverURL := setupAutomationRuleMock(t, mock)

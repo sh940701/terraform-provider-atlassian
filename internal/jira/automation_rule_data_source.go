@@ -132,8 +132,8 @@ func (d *automationRuleDataSource) Read(ctx context.Context, req datasource.Read
 		return
 	}
 
-	var apiResp ruleDoc
-	statusCode, err := d.client.GetWithStatus(ctx, rulePath, &apiResp)
+	var got ruleGetResponse
+	statusCode, err := d.client.GetWithStatus(ctx, rulePath, &got)
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading automation rule", err.Error())
 		return
@@ -146,6 +146,11 @@ func (d *automationRuleDataSource) Read(ctx context.Context, req datasource.Read
 		)
 		return
 	}
+	if got.Rule == nil {
+		resp.Diagnostics.AddError("Error reading automation rule", "GET response carried no \"rule\" document")
+		return
+	}
+	apiResp := *got.Rule
 	// GetWithStatus only returns (code, nil) for 200 and 404; any other
 	// status is already in err above (and includes the response body).
 
