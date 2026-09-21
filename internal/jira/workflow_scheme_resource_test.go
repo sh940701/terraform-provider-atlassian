@@ -635,11 +635,57 @@ func TestAccWorkflowSchemeResource_ActiveSchemeUpdatesViaDraft(t *testing.T) {
 			record("PUT draft")
 			m := mappings(r)
 			state.mu.Lock()
+			original := map[string]string{}
+			for k, v := range state.issueTypeMappings {
+				original[k] = v
+			}
 			state.issueTypeMappings = m // the draft holds the new mappings; publish makes them live
 			state.mu.Unlock()
-			_ = json.NewEncoder(w).Encode(state.apiResponse())
+			resp := state.apiResponse()
+			resp["originalIssueTypeMappings"] = original
+			resp["originalDefaultWorkflow"] = "jira"
+			_ = json.NewEncoder(w).Encode(resp)
+		case r.Method == "GET" && r.URL.Path == "/rest/api/3/workflows/search":
+			record("GET workflows/search " + r.URL.Query().Get("queryString"))
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"values": []map[string]string{
+				{"id": "wf-sub", "name": "Subtask Workflow"}, {"id": "wf-bug", "name": "Bug Workflow"}}})
+		case r.Method == "POST" && r.URL.Path == "/rest/api/3/workflowscheme/update/mappings":
+			record("POST update/mappings")
+			var body struct {
+				ID                     string `json:"id"`
+				WorkflowsForIssueTypes []struct {
+					WorkflowID   string   `json:"workflowId"`
+					IssueTypeIDs []string `json:"issueTypeIds"`
+				} `json:"workflowsForIssueTypes"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body.ID != "10000" || len(body.WorkflowsForIssueTypes) != 1 || body.WorkflowsForIssueTypes[0].WorkflowID != "wf-sub" ||
+				len(body.WorkflowsForIssueTypes[0].IssueTypeIDs) != 1 || body.WorkflowsForIssueTypes[0].IssueTypeIDs[0] != "10002" {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"errorMessages":["unexpected update/mappings request"]}`))
+				return
+			}
+			// the old (default) workflow has status 300 which "Subtask Workflow" lacks
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"statusMappingsByIssueTypes": []map[string]interface{}{{"issueTypeId": "10002", "statusIds": []string{"300"}}},
+				"statusMappingsByWorkflows":  []interface{}{},
+				"statusesPerWorkflow":        []map[string]interface{}{{"workflowId": "wf-sub", "initialStatusId": "100", "statuses": []string{"100", "200"}}},
+			})
 		case r.Method == "POST" && r.URL.Path == "/rest/api/3/workflowscheme/10000/draft/publish":
 			record("POST publish")
+			var body struct {
+				StatusMappings []struct {
+					IssueTypeID string `json:"issueTypeId"`
+					StatusID    string `json:"statusId"`
+					NewStatusID string `json:"newStatusId"`
+				} `json:"statusMappings"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if len(body.StatusMappings) != 1 || body.StatusMappings[0].IssueTypeID != "10002" || body.StatusMappings[0].StatusID != "300" || body.StatusMappings[0].NewStatusID != "100" {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"errorMessages":["Issue type with ID 10002 is missing the mappings required for statuses with IDs 300."]}`))
+				return
+			}
 			w.Header().Set("Location", mockServer.URL+"/rest/api/3/task/t-1")
 			w.WriteHeader(http.StatusSeeOther)
 		case r.Method == "GET" && r.URL.Path == "/rest/api/3/task/t-1":
@@ -679,7 +725,7 @@ func TestAccWorkflowSchemeResource_ActiveSchemeUpdatesViaDraft(t *testing.T) {
 					func(_ *terraform.State) error {
 						mu.Lock()
 						defer mu.Unlock()
-						want := []string{"PUT scheme", "POST createdraft", "PUT draft", "POST publish", "GET task"}
+						want := []string{"PUT scheme", "POST createdraft", "PUT draft", "GET workflows/search Subtask Workflow", "POST update/mappings", "POST publish", "GET task"}
 						if len(calls) < len(want) {
 							return fmt.Errorf("draft route not taken, calls: %v", calls)
 						}

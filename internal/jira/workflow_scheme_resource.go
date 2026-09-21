@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
+	"sort"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -323,12 +325,23 @@ func (r *workflowSchemeResource) updateViaDraft(ctx context.Context, id string, 
 		Name: body.Name, Description: body.Description, DefaultWorkflow: body.DefaultWorkflow,
 		IssueTypeMappings: body.IssueTypeMappings, UpdateDraftIfNeeded: true,
 	}
-	if err := r.client.Put(ctx, base+"/draft", draftBody, &draft); err != nil {
+	var written workflowSchemeDraftResponse
+	if err := r.client.Put(ctx, base+"/draft", draftBody, &written); err != nil {
 		return fmt.Errorf("writing draft mappings: %w", err)
 	}
 
+	// Publishing refuses issue types whose old workflow has statuses the new
+	// one lacks ("Issue type with ID X is missing the mappings required for
+	// statuses with IDs ...") — even when no issue of that type exists yet.
+	// Ask Jira which (issue type, status) pairs need a mapping and send each
+	// to the new workflow's initial status.
+	statusMappings, err := r.requiredStatusMappings(ctx, id, written)
+	if err != nil {
+		return err
+	}
+
 	var task workflowSchemeTask
-	if _, err := r.client.PostWithStatus(ctx, base+"/draft/publish", map[string]interface{}{"statusMappings": []interface{}{}}, &task); err != nil {
+	if _, err := r.client.PostWithStatus(ctx, base+"/draft/publish", map[string]interface{}{"statusMappings": statusMappings}, &task); err != nil {
 		return fmt.Errorf("publishing draft: %w", err)
 	}
 	if task.ID != "" {
@@ -341,6 +354,149 @@ func (r *workflowSchemeResource) updateViaDraft(ctx context.Context, id string, 
 		return fmt.Errorf("reading scheme after publish: %w", err)
 	}
 	return nil
+}
+
+// workflowSchemeDraftResponse is what PUT/GET /workflowscheme/{id}/draft
+// returns — the draft mappings plus the live ("original") ones.
+type workflowSchemeDraftResponse struct {
+	workflowSchemeAPIResponse
+	OriginalDefaultWorkflow   string            `json:"originalDefaultWorkflow"`
+	OriginalIssueTypeMappings map[string]string `json:"originalIssueTypeMappings"`
+}
+
+// statusMapping is one entry of PublishDraftWorkflowScheme.statusMappings.
+type statusMapping struct {
+	IssueTypeID string `json:"issueTypeId"`
+	StatusID    string `json:"statusId"`
+	NewStatusID string `json:"newStatusId"`
+}
+
+// requiredStatusMappings asks POST /workflowscheme/update/mappings which
+// (issue type, status) pairs the draft's workflow changes leave unmapped and
+// maps each to the initial status of that issue type's new workflow. Issue
+// types the live scheme does not map explicitly are treated as moving off
+// the live default workflow.
+func (r *workflowSchemeResource) requiredStatusMappings(ctx context.Context, schemeID string, draft workflowSchemeDraftResponse) ([]statusMapping, error) {
+	// issue type → new workflow name, only where the workflow actually changes
+	changed := map[string]string{}
+	for issueType, newWF := range draft.IssueTypeMappings {
+		oldWF, ok := draft.OriginalIssueTypeMappings[issueType]
+		if !ok {
+			oldWF = draft.OriginalDefaultWorkflow
+		}
+		if oldWF != newWF {
+			changed[issueType] = newWF
+		}
+	}
+	if len(changed) == 0 {
+		return []statusMapping{}, nil
+	}
+
+	// workflow name → id (the mappings endpoint speaks ids)
+	wfID := map[string]string{}
+	for _, name := range changed {
+		if _, done := wfID[name]; done {
+			continue
+		}
+		id, err := r.workflowIDByName(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		wfID[name] = id
+	}
+
+	byWF := map[string][]string{}
+	for issueType, name := range changed {
+		byWF[wfID[name]] = append(byWF[wfID[name]], issueType)
+	}
+	req := map[string]interface{}{"id": schemeID, "workflowsForIssueTypes": []map[string]interface{}{}}
+	for id, issueTypes := range byWF {
+		sort.Strings(issueTypes)
+		req["workflowsForIssueTypes"] = append(req["workflowsForIssueTypes"].([]map[string]interface{}), map[string]interface{}{"workflowId": id, "issueTypeIds": issueTypes})
+	}
+	var required struct {
+		ByIssueType []struct {
+			IssueTypeID string   `json:"issueTypeId"`
+			StatusIDs   []string `json:"statusIds"`
+		} `json:"statusMappingsByIssueTypes"`
+		ByWorkflow []struct {
+			TargetWorkflowID string   `json:"targetWorkflowId"`
+			StatusIDs        []string `json:"statusIds"`
+		} `json:"statusMappingsByWorkflows"`
+		PerWorkflow []struct {
+			WorkflowID      string `json:"workflowId"`
+			InitialStatusID string `json:"initialStatusId"`
+		} `json:"statusesPerWorkflow"`
+	}
+	if err := r.client.Post(ctx, "/rest/api/3/workflowscheme/update/mappings", req, &required); err != nil {
+		return nil, fmt.Errorf("asking Jira which status mappings the draft needs: %w", err)
+	}
+	initial := map[string]string{}
+	for _, w := range required.PerWorkflow {
+		initial[w.WorkflowID] = w.InitialStatusID
+	}
+
+	// (issue type, status) pairs to map; by-workflow entries apply to every
+	// issue type moving to that workflow
+	need := map[string]map[string]bool{}
+	add := func(issueType, status string) {
+		if need[issueType] == nil {
+			need[issueType] = map[string]bool{}
+		}
+		need[issueType][status] = true
+	}
+	for _, e := range required.ByIssueType {
+		for _, st := range e.StatusIDs {
+			add(e.IssueTypeID, st)
+		}
+	}
+	for _, e := range required.ByWorkflow {
+		for issueType, name := range changed {
+			if wfID[name] == e.TargetWorkflowID {
+				for _, st := range e.StatusIDs {
+					add(issueType, st)
+				}
+			}
+		}
+	}
+
+	out := []statusMapping{}
+	for issueType, statuses := range need {
+		target := initial[wfID[changed[issueType]]]
+		if target == "" {
+			return nil, fmt.Errorf("issue type %s needs status mappings but Jira reported no initial status for workflow %q", issueType, changed[issueType])
+		}
+		for st := range statuses {
+			out = append(out, statusMapping{IssueTypeID: issueType, StatusID: st, NewStatusID: target})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].IssueTypeID != out[j].IssueTypeID {
+			return out[i].IssueTypeID < out[j].IssueTypeID
+		}
+		return out[i].StatusID < out[j].StatusID
+	})
+	return out, nil
+}
+
+// workflowIDByName resolves a workflow's id through GET /workflows/search
+// (exact name match; the query is a substring filter).
+func (r *workflowSchemeResource) workflowIDByName(ctx context.Context, name string) (string, error) {
+	var page struct {
+		Values []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"values"`
+	}
+	if err := r.client.Get(ctx, "/rest/api/3/workflows/search?maxResults=50&queryString="+url.QueryEscape(name), &page); err != nil {
+		return "", fmt.Errorf("looking up workflow %q: %w", name, err)
+	}
+	for _, w := range page.Values {
+		if w.Name == name {
+			return w.ID, nil
+		}
+	}
+	return "", fmt.Errorf("workflow %q not found", name)
 }
 
 // waitForTask polls GET /rest/api/3/task/{id} until the task finishes.
