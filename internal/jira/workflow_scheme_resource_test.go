@@ -586,3 +586,112 @@ data "atlassian_jira_workflow_scheme" "test" {
 		},
 	})
 }
+
+// An ACTIVE scheme (one a project uses) rejects PUT /workflowscheme/{id}
+// with 400 — Jira's route for changing its mappings is a draft that gets
+// published as an async task (real site, 2026-09-21). The resource must
+// fall back to that route transparently.
+func TestAccWorkflowSchemeResource_ActiveSchemeUpdatesViaDraft(t *testing.T) {
+	const fixedID int64 = 10000
+	state := &workflowSchemeMockState{}
+	var calls []string
+	var mu sync.Mutex
+	record := func(s string) { mu.Lock(); calls = append(calls, s); mu.Unlock() }
+	mappings := func(r *http.Request) map[string]string {
+		var body struct {
+			Name              string            `json:"name"`
+			DefaultWorkflow   string            `json:"defaultWorkflow"`
+			IssueTypeMappings map[string]string `json:"issueTypeMappings"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		return body.IssueTypeMappings
+	}
+
+	var mockServer *httptest.Server
+	mockServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/rest/api/3/workflowscheme":
+			var body struct {
+				Name              string            `json:"name"`
+				DefaultWorkflow   string            `json:"defaultWorkflow"`
+				IssueTypeMappings map[string]string `json:"issueTypeMappings"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			state.set(fixedID, body.Name, "", body.DefaultWorkflow, body.IssueTypeMappings)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(state.apiResponse())
+		case r.Method == "GET" && r.URL.Path == "/rest/api/3/workflowscheme/10000":
+			_ = json.NewEncoder(w).Encode(state.apiResponse())
+		case r.Method == "PUT" && r.URL.Path == "/rest/api/3/workflowscheme/10000":
+			record("PUT scheme")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"errorMessages":["Cannot change the mappings of an active workflow scheme."],"errors":{}}`))
+		case r.Method == "POST" && r.URL.Path == "/rest/api/3/workflowscheme/10000/createdraft":
+			record("POST createdraft")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(state.apiResponse())
+		case r.Method == "PUT" && r.URL.Path == "/rest/api/3/workflowscheme/10000/draft":
+			record("PUT draft")
+			m := mappings(r)
+			state.mu.Lock()
+			state.issueTypeMappings = m // the draft holds the new mappings; publish makes them live
+			state.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(state.apiResponse())
+		case r.Method == "POST" && r.URL.Path == "/rest/api/3/workflowscheme/10000/draft/publish":
+			record("POST publish")
+			w.Header().Set("Location", mockServer.URL+"/rest/api/3/task/t-1")
+			w.WriteHeader(http.StatusSeeOther)
+		case r.Method == "GET" && r.URL.Path == "/rest/api/3/task/t-1":
+			record("GET task")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "t-1", "status": "COMPLETE"})
+		case r.Method == "DELETE" && r.URL.Path == "/rest/api/3/workflowscheme/10000":
+			state.clear()
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer mockServer.Close()
+
+	t.Setenv("ATLASSIAN_URL", mockServer.URL)
+	t.Setenv("ATLASSIAN_USER", "test@test.com")
+	t.Setenv("ATLASSIAN_TOKEN", "test-token")
+
+	config := func(extra string) string {
+		return fmt.Sprintf(`resource "atlassian_jira_workflow_scheme" "test" {
+  name             = "active-scheme"
+  default_workflow = "jira"
+  issue_type_mappings = {
+    "10001" = "Bug Workflow"%s
+  }
+}`, extra)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testutil.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config("")},
+			{
+				Config: config("\n    \"10002\" = \"Subtask Workflow\""),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("atlassian_jira_workflow_scheme.test", "issue_type_mappings.10002", "Subtask Workflow"),
+					func(_ *terraform.State) error {
+						mu.Lock()
+						defer mu.Unlock()
+						want := []string{"PUT scheme", "POST createdraft", "PUT draft", "POST publish", "GET task"}
+						if len(calls) < len(want) {
+							return fmt.Errorf("draft route not taken, calls: %v", calls)
+						}
+						for i, w := range want {
+							if calls[i] != w {
+								return fmt.Errorf("call %d: got %q want %q (all: %v)", i, calls[i], w, calls)
+							}
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}

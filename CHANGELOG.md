@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.3] (2026-09-21)
+
+
+### Bug Fixes
+
+* `atlassian_jira_workflow_scheme`: updating an ACTIVE scheme (one a project uses) no longer fails with 400 "Cannot change the mappings of an active workflow scheme" — the resource now falls back to Jira's draft route (create/reuse draft → write mappings → publish → wait for the async task) and reads the scheme back. Existing issues keep their statuses; no status mappings are sent. Found on the first real apply that added issue types to a live project (2026-09-21).
+
 ## [0.3.2] (2026-09-21)
 
 
